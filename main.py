@@ -164,16 +164,27 @@ def format_summary_table(recommendations: list[Recommendation]) -> Table:
     table.add_column("Rank", justify="center", width=4)
     table.add_column("Symbol", style="bold")
     table.add_column("Type")
-    table.add_column("Recommendation", justify="center")
+    table.add_column("Rec", justify="center")
     table.add_column("Score", justify="right")
-    table.add_column("Confidence", justify="center")
     table.add_column("Analysts", justify="right")
+    table.add_column("Markets", justify="right")
+    table.add_column("News", justify="right")
+    table.add_column("Confidence", justify="center")
 
     for i, rec in enumerate(recommendations, 1):
         rec_color = get_recommendation_color(rec.recommendation)
         conf_color = get_confidence_color(rec.confidence)
 
         analyst_count = rec.analyst_data.total_analysts if rec.analyst_data else 0
+        analyst_score = f"{rec.analyst_score.score:.0%}" if rec.analyst_score else "-"
+        betting_score = f"{rec.betting_score.score:.0%}" if rec.betting_score else "-"
+        news_score = f"{rec.news_score.score:.0%}" if rec.news_score else "-"
+
+        # Color scores based on value
+        def score_style(score_obj):
+            if not score_obj or score_obj.confidence == "none":
+                return "dim"
+            return "green" if score_obj.score >= 0.6 else "yellow" if score_obj.score >= 0.4 else "red"
 
         table.add_row(
             str(i),
@@ -181,8 +192,10 @@ def format_summary_table(recommendations: list[Recommendation]) -> Table:
             rec.asset_type,
             Text(rec.recommendation.value, style=rec_color),
             f"{rec.overall_score:.1%}",
+            Text(f"{analyst_score} ({analyst_count})", style=score_style(rec.analyst_score)),
+            Text(betting_score, style=score_style(rec.betting_score)),
+            Text(news_score, style=score_style(rec.news_score)),
             Text(rec.confidence, style=conf_color),
-            str(analyst_count),
         )
 
     return table
@@ -427,6 +440,94 @@ def config_show() -> None:
     table.add_row("Verbose Output", str(config.verbose))
 
     console.print(table)
+
+
+@cli.command()
+@click.option(
+    "--type",
+    "-t",
+    "market_type",
+    type=click.Choice(["crypto", "stock", "all", "top"]),
+    default="all",
+    help="Type of markets to show",
+)
+@click.option("--limit", "-l", default=15, help="Maximum number of markets to show")
+@click.option("--search", "-s", help="Search for specific markets")
+def polymarket(market_type: str, limit: int, search: str | None) -> None:
+    """Browse Polymarket prediction markets.
+
+    Examples:
+        recommend polymarket --type crypto
+        recommend polymarket --type stock
+        recommend polymarket --search "bitcoin"
+        recommend polymarket --type top --limit 20
+    """
+    from src.data_sources.betting import BettingMarketFetcher
+
+    async def run() -> list:
+        fetcher = BettingMarketFetcher()
+        try:
+            if search:
+                console.print(f"\n[bold]Searching Polymarket for: {search}[/]\n")
+                return await fetcher.search_markets(search, limit)
+            elif market_type == "crypto":
+                console.print("\n[bold]Crypto-Related Prediction Markets[/]\n")
+                return await fetcher.get_crypto_markets(limit)
+            elif market_type == "stock":
+                console.print("\n[bold]Stock/Market-Related Prediction Markets[/]\n")
+                return await fetcher.get_stock_markets(limit)
+            elif market_type == "top":
+                console.print("\n[bold]Top Prediction Markets by Liquidity[/]\n")
+                return await fetcher.get_top_markets(limit)
+            else:
+                # Default: show both crypto and stock
+                console.print("\n[bold]Crypto & Stock Prediction Markets[/]\n")
+                crypto = await fetcher.get_crypto_markets(limit // 2)
+                stock = await fetcher.get_stock_markets(limit // 2)
+                combined = crypto + stock
+                combined.sort(key=lambda m: m.liquidity or 0, reverse=True)
+                return combined[:limit]
+        finally:
+            await fetcher.close()
+
+    try:
+        markets = asyncio.run(run())
+
+        if not markets:
+            console.print("[yellow]No markets found.[/]")
+            return
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Market", width=55)
+        table.add_column("Prob", justify="right", width=6)
+        table.add_column("Liquidity", justify="right", width=12)
+        table.add_column("End Date", width=12)
+
+        for market in markets:
+            # Color probability based on value
+            prob = market.probability
+            if prob >= 0.7:
+                prob_style = "green"
+            elif prob <= 0.3:
+                prob_style = "red"
+            else:
+                prob_style = "yellow"
+
+            end_date = market.end_date.strftime("%Y-%m-%d") if market.end_date else "N/A"
+
+            table.add_row(
+                market.title[:55] + "..." if len(market.title) > 55 else market.title,
+                Text(f"{prob:.0%}", style=prob_style),
+                f"${market.liquidity:,.0f}" if market.liquidity else "N/A",
+                end_date,
+            )
+
+        console.print(table)
+        console.print(f"\n[dim]Showing {len(markets)} markets sorted by liquidity[/]")
+
+    except Exception as e:
+        console.print(f"[red]Error fetching markets: {e}[/]")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

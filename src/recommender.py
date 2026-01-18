@@ -428,11 +428,24 @@ class RecommendationEngine:
 
 # Default symbol lists for quick analysis
 DEFAULT_STOCKS = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
-    "META", "TSLA", "AMD", "NFLX", "CRM",
+    # Mega cap tech
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    # Large cap tech
+    "AMD", "NFLX", "CRM", "ORCL", "ADBE", "INTC", "CSCO", "IBM",
+    # Semiconductors
+    "AVGO", "QCOM", "TXN", "MU", "AMAT",
+    # Finance
+    "JPM", "BAC", "WFC", "GS", "MS",
+    # Healthcare
+    "JNJ", "UNH", "PFE", "ABBV", "MRK",
+    # Consumer
+    "WMT", "HD", "MCD", "NKE", "SBUX",
+    # Energy
+    "XOM", "CVX",
 ]
 
 DEFAULT_CRYPTO = [
     "BTC", "ETH", "SOL", "XRP", "ADA",
     "DOGE", "DOT", "LINK", "AVAX", "MATIC",
+    "SHIB", "LTC", "UNI", "ATOM", "XLM",
 ]

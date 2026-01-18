@@ -163,10 +163,11 @@ class BettingMarketFetcher:
         search_terms = self._build_search_terms(symbol, asset_type)
 
         try:
-            # Polymarket CLOB API for markets
+            # Polymarket CLOB API for markets - fetch active markets only
             url = f"{self._polymarket_base}/markets"
+            params = {"closed": "false", "limit": "500"}
 
-            async with session.get(url) as response:
+            async with session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
 
@@ -236,37 +237,50 @@ class BettingMarketFetcher:
     ) -> BettingMarket | None:
         """Parse a Polymarket market into our data structure."""
         try:
-            market_id = market.get("id") or market.get("condition_id", "")
+            import json as json_module
+
+            market_id = str(market.get("id") or market.get("conditionId", ""))
             title = market.get("question", "")
             description = market.get("description", "")
 
             # Get outcome prices (probability)
-            # Polymarket uses CLOB so we look at best bid/ask
-            outcomes = market.get("outcomes", [])
-            tokens = market.get("tokens", [])
-
+            # outcomePrices is a JSON string like "[\"0.029\", \"0.971\"]"
             probability = 0.5
-            if tokens:
-                # First token is usually "Yes"
-                yes_token = tokens[0] if tokens else {}
-                probability = float(yes_token.get("price", 0.5))
-            elif outcomes:
-                # Alternative structure
-                probability = float(outcomes[0].get("price", 0.5))
+            outcome_prices = market.get("outcomePrices")
+            if outcome_prices:
+                try:
+                    if isinstance(outcome_prices, str):
+                        prices = json_module.loads(outcome_prices)
+                    else:
+                        prices = outcome_prices
+                    if prices and len(prices) > 0:
+                        # First price is "Yes" probability
+                        probability = float(prices[0])
+                except (json_module.JSONDecodeError, ValueError, IndexError):
+                    pass
+
+            # Fallback to tokens if available
+            if probability == 0.5:
+                tokens = market.get("tokens", [])
+                if tokens and isinstance(tokens, list) and len(tokens) > 0:
+                    yes_token = tokens[0]
+                    if isinstance(yes_token, dict):
+                        probability = float(yes_token.get("price", 0.5))
 
             # Determine if this is a bullish or bearish market
             is_bullish = self._is_bullish_market(title)
             if not is_bullish:
                 probability = 1 - probability  # Invert for bearish markets
 
-            volume = float(market.get("volume", 0) or 0)
-            liquidity = float(market.get("liquidity", 0) or 0)
+            volume = float(market.get("volume", 0) or market.get("volumeNum", 0) or 0)
+            liquidity = float(market.get("liquidity", 0) or market.get("liquidityNum", 0) or 0)
 
             end_date = None
-            if market.get("end_date_iso"):
+            date_str = market.get("endDate") or market.get("end_date_iso")
+            if date_str:
                 try:
                     end_date = datetime.fromisoformat(
-                        market["end_date_iso"].replace("Z", "+00:00")
+                        date_str.replace("Z", "+00:00")
                     )
                 except (ValueError, AttributeError):
                     pass
@@ -399,8 +413,9 @@ class BettingMarketFetcher:
 
         try:
             url = f"{self._polymarket_base}/markets"
+            params = {"closed": "false", "limit": "500"}
 
-            async with session.get(url) as response:
+            async with session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
                     query_lower = query.lower()
@@ -413,10 +428,153 @@ class BettingMarketFetcher:
                             parsed = self._parse_polymarket_market(market, query)
                             if parsed:
                                 markets.append(parsed)
-                                if len(markets) >= limit:
-                                    break
+
+                    # Sort by liquidity and return top results
+                    markets.sort(key=lambda m: m.liquidity or 0, reverse=True)
+                    markets = markets[:limit]
 
         except Exception as e:
             logger.warning(f"Error searching markets: {e}")
+
+        return markets
+
+    async def get_crypto_markets(self, limit: int = 20) -> list[BettingMarket]:
+        """Get all crypto-related prediction markets.
+
+        Returns:
+            List of crypto-related BettingMarket objects sorted by liquidity
+        """
+        session = await self._get_session()
+        markets: list[BettingMarket] = []
+
+        # Strong crypto keywords - use word boundary matching
+        # These patterns need to match as whole words to avoid "eth" matching "Netherlands"
+        strong_crypto_patterns = [
+            r"\bbitcoin\b", r"\bethereum\b", r"\bbtc\b", r"\beth\b",
+            r"\bsolana\b", r"\bdogecoin\b", r"\bripple\b", r"\bxrp\b",
+            r"\bcardano\b", r"\bcrypto\b", r"\bcryptocurrency\b",
+            r"\bmegaeth\b",
+        ]
+
+        # Weaker keywords that might appear in description
+        weak_crypto_patterns = [
+            r"\bblockchain\b", r"\baltcoin\b", r"\bdefi\b",
+        ]
+
+        try:
+            url = f"{self._polymarket_base}/markets"
+            params = {"closed": "false", "limit": "500"}
+
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+
+                    for market in data if isinstance(data, list) else []:
+                        title = market.get("question", "").lower()
+                        desc = market.get("description", "").lower()
+                        combined = f"{title} {desc}"
+
+                        # Strong match: crypto keyword in title = definitely crypto
+                        has_strong_crypto = any(
+                            re.search(pattern, title) for pattern in strong_crypto_patterns
+                        )
+
+                        # Weak match: crypto keyword in description
+                        has_weak_crypto = any(
+                            re.search(pattern, combined) for pattern in weak_crypto_patterns
+                        )
+
+                        if has_strong_crypto or has_weak_crypto:
+                            parsed = self._parse_polymarket_market(market, "CRYPTO")
+                            if parsed:
+                                markets.append(parsed)
+
+                    # Sort by liquidity
+                    markets.sort(key=lambda m: m.liquidity or 0, reverse=True)
+                    markets = markets[:limit]
+
+        except Exception as e:
+            logger.warning(f"Error fetching crypto markets: {e}")
+
+        return markets
+
+    async def get_stock_markets(self, limit: int = 20) -> list[BettingMarket]:
+        """Get all stock/market-related prediction markets.
+
+        Returns:
+            List of stock-related BettingMarket objects sorted by liquidity
+        """
+        session = await self._get_session()
+        markets: list[BettingMarket] = []
+
+        # Financial/stock market patterns with word boundaries
+        stock_patterns = [
+            r"stock market", r"stock price", r"s&p 500", r"s&p500", r"\bnasdaq\b",
+            r"dow jones", r"\bfed\b rate", r"interest rate", r"\brecession\b",
+            r"\binflation\b", r"\bgdp\b", r"tesla stock", r"apple stock",
+            r"nvidia stock", r"amazon stock", r"microsoft stock", r"google stock",
+            r"\bearnings\b", r"\bipo\b", r"market crash", r"bull market", r"bear market",
+        ]
+
+        try:
+            url = f"{self._polymarket_base}/markets"
+            params = {"closed": "false", "limit": "500"}
+
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+
+                    for market in data if isinstance(data, list) else []:
+                        title = market.get("question", "").lower()
+                        desc = market.get("description", "").lower()
+                        combined = f"{title} {desc}"
+
+                        # Must have a stock/finance keyword
+                        has_stock = any(
+                            re.search(pattern, combined) for pattern in stock_patterns
+                        )
+
+                        if has_stock:
+                            parsed = self._parse_polymarket_market(market, "STOCK")
+                            if parsed:
+                                markets.append(parsed)
+
+                    # Sort by liquidity
+                    markets.sort(key=lambda m: m.liquidity or 0, reverse=True)
+                    markets = markets[:limit]
+
+        except Exception as e:
+            logger.warning(f"Error fetching stock markets: {e}")
+
+        return markets
+
+    async def get_top_markets(self, limit: int = 20) -> list[BettingMarket]:
+        """Get top prediction markets by liquidity.
+
+        Returns:
+            List of top BettingMarket objects sorted by liquidity
+        """
+        session = await self._get_session()
+        markets: list[BettingMarket] = []
+
+        try:
+            url = f"{self._polymarket_base}/markets"
+            params = {"closed": "false", "limit": "200"}
+
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+
+                    for market in data if isinstance(data, list) else []:
+                        parsed = self._parse_polymarket_market(market, "ALL")
+                        if parsed:
+                            markets.append(parsed)
+
+                    # Sort by liquidity
+                    markets.sort(key=lambda m: m.liquidity or 0, reverse=True)
+                    markets = markets[:limit]
+
+        except Exception as e:
+            logger.warning(f"Error fetching top markets: {e}")
 
         return markets
