@@ -28,3 +28,6 @@ cachetools>=5.3.0
 
 # Type hints
 typing-extensions>=4.9.0
+
+# Stock data
+yfinance>=0.2.36
