@@ -11,6 +11,32 @@ An AI-powered investment recommendation system that combines multiple data sourc
 
 ## Installation
 
+### Using uv (Recommended)
+
+[uv](https://docs.astral.sh/uv/) is a fast Python package manager. Install it first if you haven't:
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then run the project:
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd S
+
+# Run directly (uv handles dependencies automatically)
+uv run main.py analyze AAPL --type stock
+
+# Or sync dependencies first
+uv sync
+uv run main.py picks --type crypto
+```
+
+### Using pip
+
 ```bash
 # Clone the repository
 git clone <repository-url>
@@ -26,53 +52,55 @@ pip install -r requirements.txt
 
 ## Usage
 
+> **Note**: Replace `uv run main.py` with `python main.py` if using pip installation.
+
 ### Analyze a Single Asset
 
 ```bash
 # Analyze a stock
-python main.py analyze AAPL --type stock
+uv run main.py analyze AAPL --type stock
 
 # Analyze a cryptocurrency
-python main.py analyze BTC --type crypto
+uv run main.py analyze BTC --type crypto
 
 # Get detailed analysis
-python main.py analyze AAPL --type stock --detailed
+uv run main.py analyze AAPL --type stock --detailed
 ```
 
 ### Get Top Picks
 
 ```bash
 # Get top stock picks
-python main.py picks --type stock --top 10
+uv run main.py picks --type stock --top 10
 
 # Get top crypto picks
-python main.py picks --type crypto --top 5
+uv run main.py picks --type crypto --top 5
 
 # Analyze both stocks and crypto
-python main.py picks --type both
+uv run main.py picks --type both
 
 # Analyze custom symbols
-python main.py picks --symbols "AAPL,MSFT,GOOGL" --type stock
+uv run main.py picks --symbols "AAPL,MSFT,GOOGL" --type stock
 ```
 
 ### Market Overview
 
 ```bash
 # Get market overview with macro sentiment
-python main.py overview
+uv run main.py overview
 ```
 
 ### Search Prediction Markets
 
 ```bash
 # Search for prediction markets
-python main.py search "bitcoin price"
+uv run main.py search "bitcoin price"
 ```
 
 ### View Configuration
 
 ```bash
-python main.py config-show
+uv run main.py config-show
 ```
 
 ## Configuration
