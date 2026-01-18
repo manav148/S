@@ -1,0 +1,76 @@
+# Stock/Crypto Recommender Configuration
+
+# Analyst settings
+analyst:
+  # Minimum number of analysts required for a recommendation
+  min_analysts: 10
+  # Maximum number of analysts to consider
+  max_analysts: 15
+  # Target horizon for picks (in months)
+  horizon_months_min: 6
+  horizon_months_max: 12
+
+# Data sources configuration
+data_sources:
+  # Enable/disable specific data sources
+  analyst_ratings: true
+  betting_markets: true
+  news_aggregation: true
+
+# Betting markets configuration
+betting_markets:
+  polymarket:
+    enabled: true
+    base_url: "https://gamma-api.polymarket.com"
+  # Add more betting markets here as needed
+
+# News sources configuration
+news:
+  # RSS feeds for financial news
+  rss_feeds:
+    - name: "Yahoo Finance"
+      url: "https://finance.yahoo.com/news/rssindex"
+    - name: "CoinDesk"
+      url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    - name: "Seeking Alpha"
+      url: "https://seekingalpha.com/market_currents.xml"
+    - name: "Reuters Business"
+      url: "https://www.reutersagency.com/feed/?best-topics=business-finance"
+
+  # Maximum age of news articles (in days)
+  max_age_days: 7
+  # Maximum number of articles to fetch per source
+  max_articles_per_source: 20
+
+# Recommendation engine settings
+recommendation:
+  # Weight for analyst consensus (0-1)
+  analyst_weight: 0.5
+  # Weight for betting market sentiment (0-1)
+  betting_weight: 0.25
+  # Weight for news sentiment (0-1)
+  news_weight: 0.25
+
+  # Score thresholds
+  strong_buy_threshold: 0.8
+  buy_threshold: 0.6
+  hold_threshold: 0.4
+  # Below hold_threshold is considered sell
+
+# API rate limiting
+rate_limits:
+  requests_per_minute: 60
+  retry_attempts: 3
+  retry_delay_seconds: 2
+
+# Caching settings
+cache:
+  enabled: true
+  ttl_minutes: 30
+
+# Output settings
+output:
+  # Show detailed analysis
+  verbose: true
+  # Number of top recommendations to show
+  top_n: 10
