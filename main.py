@@ -69,6 +69,18 @@ def format_recommendation(rec: Recommendation) -> Panel:
     )
     table.add_row("Horizon", f"{rec.horizon_months[0]}-{rec.horizon_months[1]} months")
 
+    # Price info
+    if rec.current_price:
+        table.add_row("Current Price", f"${rec.current_price:,.2f}")
+    if rec.target_price:
+        table.add_row("Target Price", f"${rec.target_price:,.2f}")
+    if rec.upside_potential is not None:
+        upside_style = "green" if rec.upside_potential > 0 else "red"
+        table.add_row("Upside", Text(f"{rec.upside_potential:+.1f}%", style=upside_style))
+    if rec.risk_reward_ratio is not None:
+        rr_style = "green" if rec.risk_reward_ratio >= 2 else "yellow" if rec.risk_reward_ratio >= 1 else "red"
+        table.add_row("Risk/Reward", Text(f"{rec.risk_reward_ratio:.2f} ({rec.risk_reward_label})", style=rr_style))
+
     # Score breakdown
     if rec.analyst_score:
         table.add_row(
@@ -84,6 +96,11 @@ def format_recommendation(rec: Recommendation) -> Panel:
         table.add_row(
             "News Sentiment",
             f"{rec.news_score.score:.1%} ({rec.news_score.confidence})",
+        )
+    if rec.options_score:
+        table.add_row(
+            "Options Flow",
+            f"{rec.options_score.score:.1%} ({rec.options_score.confidence})",
         )
 
     return Panel(table, title=title, border_style=rec_color)
@@ -105,6 +122,33 @@ def format_detailed_recommendation(rec: Recommendation) -> None:
         console.print("\n[bold red]Risk Factors:[/]")
         for risk in rec.risk_factors:
             console.print(f"  • {risk}")
+
+    # Risk/Reward Analysis
+    if rec.current_price and rec.target_price:
+        console.print("\n[bold cyan]Risk/Reward Analysis:[/]")
+        console.print(f"  Current Price: ${rec.current_price:,.2f}")
+        console.print(f"  Target Price:  ${rec.target_price:,.2f}")
+
+        if rec.upside_potential is not None:
+            upside_color = "green" if rec.upside_potential > 0 else "red"
+            console.print(f"  Upside Potential: [{upside_color}]{rec.upside_potential:+.1f}%[/]")
+
+        if rec.downside_risk is not None:
+            console.print(f"  Est. Downside Risk: {rec.downside_risk:.1f}%")
+            if rec.options_data and rec.options_data.metrics and rec.options_data.metrics.atm_iv:
+                console.print(f"    (based on ATM IV: {rec.options_data.metrics.atm_iv:.1%})")
+            else:
+                console.print("    (using default estimate)")
+
+        if rec.risk_reward_ratio is not None:
+            rr_color = "green" if rec.risk_reward_ratio >= 2 else "yellow" if rec.risk_reward_ratio >= 1 else "red"
+            console.print(f"  Risk/Reward Ratio: [{rr_color}]{rec.risk_reward_ratio:.2f} ({rec.risk_reward_label})[/]")
+            if rec.risk_reward_ratio >= 2:
+                console.print("    [dim]✓ Generally favorable (R/R >= 2)[/]")
+            elif rec.risk_reward_ratio >= 1:
+                console.print("    [dim]~ Neutral risk/reward[/]")
+            else:
+                console.print("    [dim]⚠ Unfavorable risk/reward[/]")
 
     # Analyst details
     if rec.analyst_data and rec.analyst_data.recommendations:
@@ -154,20 +198,63 @@ def format_detailed_recommendation(rec: Recommendation) -> None:
             console.print(f"  • {article.title[:70]}...")
             console.print(f"    Source: {article.source}")
 
+    # Options details (stocks only)
+    if rec.options_data and rec.options_data.confidence != "none":
+        console.print("\n[bold]Options Flow:[/]")
+        console.print(f"  Signal Summary: {rec.options_data.signal_summary}")
+        console.print(f"  Sentiment Score: {rec.options_data.sentiment_score:.1%}")
+
+        if rec.options_data.metrics:
+            metrics = rec.options_data.metrics
+            if metrics.put_call_volume_ratio is not None:
+                pcr = metrics.put_call_volume_ratio
+                pcr_label = "bullish" if pcr < 0.7 else "bearish" if pcr > 1.0 else "neutral"
+                console.print(f"  Put/Call Ratio: {pcr:.2f} ({pcr_label})")
+
+            if metrics.total_call_volume and metrics.total_put_volume:
+                console.print(
+                    f"  Volume: {metrics.total_call_volume:,} calls / {metrics.total_put_volume:,} puts"
+                )
+
+            if metrics.iv_skew is not None:
+                skew_label = "fear" if metrics.iv_skew > 0.05 else "greed" if metrics.iv_skew < -0.03 else "neutral"
+                console.print(f"  IV Skew: {metrics.iv_skew:.3f} ({skew_label})")
+
+            if metrics.atm_iv is not None:
+                console.print(f"  ATM IV: {metrics.atm_iv:.1%}")
+
+            # Show unusual activity
+            if metrics.unusual_calls:
+                console.print("\n  [bold yellow]Unusual Call Activity:[/]")
+                for item in metrics.unusual_calls[:3]:
+                    console.print(
+                        f"    • ${item['strike']} strike: {item['volume']:,} vol / {item['open_interest']:,} OI "
+                        f"(ratio: {item['volume_oi_ratio']:.1f}x)"
+                    )
+
+            if metrics.unusual_puts:
+                console.print("\n  [bold yellow]Unusual Put Activity:[/]")
+                for item in metrics.unusual_puts[:3]:
+                    console.print(
+                        f"    • ${item['strike']} strike: {item['volume']:,} vol / {item['open_interest']:,} OI "
+                        f"(ratio: {item['volume_oi_ratio']:.1f}x)"
+                    )
+
 
 def format_summary_table(recommendations: list[Recommendation]) -> Table:
     """Format recommendations as a summary table."""
     table = Table(title="Top Picks", show_header=True, header_style="bold")
 
-    table.add_column("Rank", justify="center", width=4)
+    table.add_column("#", justify="center", width=3)
     table.add_column("Symbol", style="bold")
-    table.add_column("Type")
     table.add_column("Rec", justify="center")
     table.add_column("Score", justify="right")
+    table.add_column("Target", justify="right")
+    table.add_column("Upside", justify="right")
+    table.add_column("R/R", justify="right")
     table.add_column("Analysts", justify="right")
-    table.add_column("Markets", justify="right")
-    table.add_column("News", justify="right")
-    table.add_column("Confidence", justify="center")
+    table.add_column("Options", justify="right")
+    table.add_column("Conf", justify="center")
 
     for i, rec in enumerate(recommendations, 1):
         rec_color = get_recommendation_color(rec.recommendation)
@@ -175,8 +262,24 @@ def format_summary_table(recommendations: list[Recommendation]) -> Table:
 
         analyst_count = rec.analyst_data.total_analysts if rec.analyst_data else 0
         analyst_score = f"{rec.analyst_score.score:.0%}" if rec.analyst_score else "-"
-        betting_score = f"{rec.betting_score.score:.0%}" if rec.betting_score else "-"
-        news_score = f"{rec.news_score.score:.0%}" if rec.news_score else "-"
+        options_score = f"{rec.options_score.score:.0%}" if rec.options_score else "-"
+
+        # Target price
+        target = f"${rec.target_price:,.0f}" if rec.target_price else "-"
+
+        # Upside potential with color
+        if rec.upside_potential is not None:
+            upside_style = "green" if rec.upside_potential > 10 else "yellow" if rec.upside_potential > 0 else "red"
+            upside = Text(f"{rec.upside_potential:+.1f}%", style=upside_style)
+        else:
+            upside = Text("-", style="dim")
+
+        # Risk/Reward ratio with color
+        if rec.risk_reward_ratio is not None:
+            rr_style = "green" if rec.risk_reward_ratio >= 2 else "yellow" if rec.risk_reward_ratio >= 1 else "red"
+            rr = Text(f"{rec.risk_reward_ratio:.1f}", style=rr_style)
+        else:
+            rr = Text("-", style="dim")
 
         # Color scores based on value
         def score_style(score_obj):
@@ -187,13 +290,14 @@ def format_summary_table(recommendations: list[Recommendation]) -> Table:
         table.add_row(
             str(i),
             rec.symbol,
-            rec.asset_type,
             Text(rec.recommendation.value, style=rec_color),
             f"{rec.overall_score:.1%}",
+            target,
+            upside,
+            rr,
             Text(f"{analyst_score} ({analyst_count})", style=score_style(rec.analyst_score)),
-            Text(betting_score, style=score_style(rec.betting_score)),
-            Text(news_score, style=score_style(rec.news_score)),
-            Text(rec.confidence, style=conf_color),
+            Text(options_score, style=score_style(rec.options_score)),
+            Text(rec.confidence[:3], style=conf_color),
         )
 
     return table
@@ -209,6 +313,7 @@ def cli(verbose: bool, debug: bool) -> None:
     - Analyst consensus (10-15 analysts, configurable)
     - Prediction market sentiment (Polymarket)
     - News sentiment analysis
+    - Options flow analysis (stocks only: put/call ratios, IV, unusual activity)
     """
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)

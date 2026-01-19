@@ -120,7 +120,7 @@ def search_markets(query: str, limit: int) -> list[dict]:
 
 def rec_to_dict(rec: Recommendation) -> dict:
     """Convert Recommendation to serializable dict."""
-    return {
+    result = {
         "symbol": rec.symbol,
         "asset_type": rec.asset_type,
         "recommendation": rec.recommendation.value,
@@ -133,16 +133,55 @@ def rec_to_dict(rec: Recommendation) -> dict:
         "betting_confidence": rec.betting_score.confidence if rec.betting_score else "none",
         "news_score": rec.news_score.score if rec.news_score else 0.5,
         "news_confidence": rec.news_score.confidence if rec.news_score else "none",
+        "options_score": rec.options_score.score if rec.options_score else 0.5,
+        "options_confidence": rec.options_score.confidence if rec.options_score else "none",
         "supporting_factors": rec.supporting_factors,
         "risk_factors": rec.risk_factors,
-        "current_price": rec.analyst_data.current_price if rec.analyst_data else None,
-        "target_price": rec.analyst_data.average_target_price if rec.analyst_data else None,
+        "current_price": rec.current_price,
+        "target_price": rec.target_price,
+        "upside_potential": rec.upside_potential,
+        "downside_risk": rec.downside_risk,
+        "risk_reward_ratio": rec.risk_reward_ratio,
+        "risk_reward_label": rec.risk_reward_label,
         "rating_distribution": rec.analyst_data.rating_distribution if rec.analyst_data else {},
         "news_count": rec.news_data.article_count if rec.news_data else 0,
         "news_bullish": rec.news_data.bullish_count if rec.news_data else 0,
         "news_bearish": rec.news_data.bearish_count if rec.news_data else 0,
         "news_neutral": rec.news_data.neutral_count if rec.news_data else 0,
     }
+
+    # Add options data if available
+    if rec.options_data and rec.options_data.metrics:
+        metrics = rec.options_data.metrics
+        result.update({
+            "options_signal": rec.options_data.signal_summary,
+            "put_call_signal": rec.options_data.put_call_signal,
+            "iv_signal": rec.options_data.iv_signal,
+            "unusual_activity_signal": rec.options_data.unusual_activity_signal,
+            "put_call_ratio": metrics.put_call_volume_ratio,
+            "iv_skew": metrics.iv_skew,
+            "atm_iv": metrics.atm_iv,
+            "total_call_volume": metrics.total_call_volume,
+            "total_put_volume": metrics.total_put_volume,
+            "unusual_calls": metrics.unusual_calls[:3] if metrics.unusual_calls else [],
+            "unusual_puts": metrics.unusual_puts[:3] if metrics.unusual_puts else [],
+        })
+    else:
+        result.update({
+            "options_signal": "N/A",
+            "put_call_signal": "neutral",
+            "iv_signal": "normal",
+            "unusual_activity_signal": "none",
+            "put_call_ratio": None,
+            "iv_skew": None,
+            "atm_iv": None,
+            "total_call_volume": 0,
+            "total_put_volume": 0,
+            "unusual_calls": [],
+            "unusual_puts": [],
+        })
+
+    return result
 
 
 def get_rec_color(rec_type: str) -> str:
@@ -175,6 +214,7 @@ def render_sidebar():
         - Analyst ratings (Yahoo Finance)
         - Prediction markets (Polymarket)
         - News sentiment (RSS feeds)
+        - Options flow (stocks only)
         """
     )
 
@@ -233,12 +273,20 @@ def render_top_picks():
         # Table
         df = pd.DataFrame(picks)
         df["Score"] = df["overall_score"].apply(lambda x: f"{x:.1%}")
+        df["Target"] = df["target_price"].apply(lambda x: f"${x:,.0f}" if x else "-")
+        df["Upside"] = df["upside_potential"].apply(lambda x: f"{x:+.1f}%" if x is not None else "-")
+        df["R/R"] = df.apply(
+            lambda r: f"{r['risk_reward_ratio']:.1f} ({r['risk_reward_label']})" if r.get("risk_reward_ratio") else "-",
+            axis=1
+        )
         df["Analysts"] = df.apply(lambda r: f"{r['analyst_score']:.0%} ({r['analyst_count']})", axis=1)
-        df["Markets"] = df["betting_score"].apply(lambda x: f"{x:.0%}")
-        df["News"] = df["news_score"].apply(lambda x: f"{x:.0%}")
+        df["Options"] = df.apply(
+            lambda r: f"{r['options_score']:.0%}" if r.get("options_confidence", "none") != "none" else "-",
+            axis=1
+        )
 
-        display_df = df[["symbol", "asset_type", "recommendation", "Score", "Analysts", "Markets", "News", "confidence"]]
-        display_df.columns = ["Symbol", "Type", "Rec", "Score", "Analysts", "Markets", "News", "Confidence"]
+        display_df = df[["symbol", "recommendation", "Score", "Target", "Upside", "R/R", "Analysts", "Options", "confidence"]]
+        display_df.columns = ["Symbol", "Rec", "Score", "Target", "Upside", "R/R", "Analysts", "Options", "Conf"]
 
         st.dataframe(
             display_df,
@@ -247,6 +295,9 @@ def render_top_picks():
             column_config={
                 "Symbol": st.column_config.TextColumn("Symbol", width="small"),
                 "Score": st.column_config.TextColumn("Score", width="small"),
+                "Target": st.column_config.TextColumn("Target", width="small"),
+                "Upside": st.column_config.TextColumn("Upside", width="small"),
+                "R/R": st.column_config.TextColumn("R/R", width="medium"),
             },
         )
 
@@ -317,7 +368,7 @@ def render_analyze():
         st.markdown("---")
 
         # Score breakdown
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
             st.metric(
@@ -340,19 +391,40 @@ def render_analyze():
                 delta=f"{data['news_count']} articles",
             )
 
+        with col4:
+            options_conf = data.get("options_confidence", "none")
+            if options_conf != "none":
+                st.metric(
+                    "Options Flow",
+                    f"{data['options_score']:.1%}",
+                    delta=data.get("options_signal", "neutral"),
+                )
+            else:
+                st.metric("Options Flow", "-", delta="N/A")
+
         # Charts
         col1, col2 = st.columns(2)
 
         with col1:
             # Score breakdown pie chart
             st.subheader("Score Breakdown")
+            labels = ["Analysts", "Markets", "News"]
+            values = [data["analyst_score"], data["betting_score"], data["news_score"]]
+            colors = ["#2196f3", "#ff9800", "#4caf50"]
+
+            # Add options if available
+            if data.get("options_confidence", "none") != "none":
+                labels.append("Options")
+                values.append(data["options_score"])
+                colors.append("#9c27b0")  # Purple for options
+
             fig = go.Figure(
                 data=[
                     go.Pie(
-                        labels=["Analysts", "Markets", "News"],
-                        values=[data["analyst_score"], data["betting_score"], data["news_score"]],
+                        labels=labels,
+                        values=values,
                         hole=0.4,
-                        marker_colors=["#2196f3", "#ff9800", "#4caf50"],
+                        marker_colors=colors,
                     )
                 ]
             )
@@ -376,17 +448,51 @@ def render_analyze():
                 fig.update_layout(height=300, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
 
-        # Price info
+        # Price & Risk/Reward Analysis
         if data["current_price"] and data["target_price"]:
-            st.subheader("Price Analysis")
-            col1, col2, col3 = st.columns(3)
+            st.subheader("💰 Price & Risk/Reward Analysis")
+
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Current Price", f"${data['current_price']:,.2f}")
             with col2:
-                st.metric("Avg Target", f"${data['target_price']:,.2f}")
+                st.metric("Target Price", f"${data['target_price']:,.2f}")
             with col3:
-                upside = ((data["target_price"] - data["current_price"]) / data["current_price"]) * 100
-                st.metric("Potential Upside", f"{upside:+.1f}%")
+                upside = data.get("upside_potential")
+                if upside is not None:
+                    delta_color = "normal" if upside >= 0 else "inverse"
+                    st.metric("Upside Potential", f"{upside:+.1f}%")
+                else:
+                    st.metric("Upside Potential", "-")
+            with col4:
+                rr = data.get("risk_reward_ratio")
+                if rr is not None:
+                    rr_label = data.get("risk_reward_label", "")
+                    st.metric("Risk/Reward", f"{rr:.2f}", delta=rr_label)
+                else:
+                    st.metric("Risk/Reward", "-")
+
+            # Risk/Reward breakdown
+            downside = data.get("downside_risk")
+            if downside is not None and upside is not None:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown(f"**Estimated Downside Risk:** {downside:.1f}%")
+                    atm_iv = data.get("atm_iv")
+                    if atm_iv:
+                        st.markdown(f"_(based on ATM IV: {atm_iv:.1%})_")
+                    else:
+                        st.markdown("_(using default estimate)_")
+
+                with col2:
+                    rr = data.get("risk_reward_ratio")
+                    if rr is not None:
+                        if rr >= 2:
+                            st.success(f"✅ Favorable R/R ratio ({rr:.2f} >= 2.0)")
+                        elif rr >= 1:
+                            st.warning(f"⚖️ Neutral R/R ratio ({rr:.2f})")
+                        else:
+                            st.error(f"⚠️ Unfavorable R/R ratio ({rr:.2f} < 1.0)")
 
         # Supporting/Risk factors
         col1, col2 = st.columns(2)
@@ -415,6 +521,70 @@ def render_analyze():
                 st.metric("Neutral", data["news_neutral"])
             with col3:
                 st.metric("Bearish", data["news_bearish"])
+
+        # Options flow details (stocks only)
+        if data.get("options_confidence", "none") != "none":
+            st.subheader("📊 Options Flow Analysis")
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                pcr = data.get("put_call_ratio")
+                if pcr is not None:
+                    pcr_color = "green" if pcr < 0.7 else "red" if pcr > 1.0 else "normal"
+                    st.metric("Put/Call Ratio", f"{pcr:.2f}")
+                else:
+                    st.metric("Put/Call Ratio", "-")
+
+            with col2:
+                st.metric("P/C Signal", data.get("put_call_signal", "neutral").title())
+
+            with col3:
+                iv_skew = data.get("iv_skew")
+                if iv_skew is not None:
+                    st.metric("IV Skew", f"{iv_skew:.3f}")
+                else:
+                    st.metric("IV Skew", "-")
+
+            with col4:
+                st.metric("IV Signal", data.get("iv_signal", "normal").replace("_", " ").title())
+
+            # Volume breakdown
+            call_vol = data.get("total_call_volume", 0)
+            put_vol = data.get("total_put_volume", 0)
+            if call_vol > 0 or put_vol > 0:
+                st.markdown(f"**Volume:** {call_vol:,} calls / {put_vol:,} puts")
+
+            # ATM IV
+            atm_iv = data.get("atm_iv")
+            if atm_iv is not None:
+                st.markdown(f"**ATM Implied Volatility:** {atm_iv:.1%}")
+
+            # Unusual activity
+            unusual_calls = data.get("unusual_calls", [])
+            unusual_puts = data.get("unusual_puts", [])
+
+            if unusual_calls or unusual_puts:
+                st.markdown("#### Unusual Options Activity")
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    if unusual_calls:
+                        st.markdown("**🟢 Unusual Calls:**")
+                        for item in unusual_calls:
+                            st.markdown(
+                                f"- ${item['strike']} strike: {item['volume']:,} vol / "
+                                f"{item['open_interest']:,} OI ({item['volume_oi_ratio']:.1f}x)"
+                            )
+
+                with col2:
+                    if unusual_puts:
+                        st.markdown("**🔴 Unusual Puts:**")
+                        for item in unusual_puts:
+                            st.markdown(
+                                f"- ${item['strike']} strike: {item['volume']:,} vol / "
+                                f"{item['open_interest']:,} OI ({item['volume_oi_ratio']:.1f}x)"
+                            )
 
 
 def render_polymarket():
@@ -488,10 +658,12 @@ def render_settings():
         st.subheader("Scoring Weights")
 
         # Weights visualization
+        options_weight = config.get("weights", "options", default=0.15)
         weights = {
             "Analysts": config.analyst_weight,
             "Betting Markets": config.betting_weight,
             "News": config.news_weight,
+            "Options": options_weight,
         }
 
         fig = go.Figure(
@@ -500,7 +672,7 @@ def render_settings():
                     labels=list(weights.keys()),
                     values=list(weights.values()),
                     hole=0.4,
-                    marker_colors=["#2196f3", "#ff9800", "#4caf50"],
+                    marker_colors=["#2196f3", "#ff9800", "#4caf50", "#9c27b0"],
                 )
             ]
         )
@@ -514,10 +686,11 @@ def render_settings():
         """
         | Source | Description |
         |--------|-------------|
-        | **Yahoo Finance** | Analyst ratings, price targets, stock data |
+        | **Yahoo Finance** | Analyst ratings, price targets, stock data, options chains |
         | **Polymarket** | Prediction market probabilities |
         | **CoinGecko** | Cryptocurrency data |
         | **RSS Feeds** | News sentiment from Yahoo Finance, MarketWatch, etc. |
+        | **Options Flow** | Put/call ratios, IV skew, unusual activity (stocks only) |
         """
     )
 

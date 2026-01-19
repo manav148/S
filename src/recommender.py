@@ -11,6 +11,7 @@ from .config import config
 from .data_sources.analyst import AnalystConsensus, AnalystDataFetcher
 from .data_sources.betting import BettingMarketFetcher, BettingMarketSentiment
 from .data_sources.news import NewsAggregator, NewsSentiment
+from .data_sources.options import OptionsDataFetcher, OptionsSentiment
 from .data_sources.screener import CryptoScreener, StockScreener
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,13 @@ class Recommendation:
     analyst_score: DataSourceScore | None = None
     betting_score: DataSourceScore | None = None
     news_score: DataSourceScore | None = None
+    options_score: DataSourceScore | None = None
 
     # Raw data
     analyst_data: AnalystConsensus | None = None
     betting_data: BettingMarketSentiment | None = None
     news_data: NewsSentiment | None = None
+    options_data: OptionsSentiment | None = None
 
     # Metadata
     generated_at: datetime = field(default_factory=datetime.now)
@@ -71,6 +74,8 @@ class Recommendation:
             breakdown["betting"] = self.betting_score.score
         if self.news_score:
             breakdown["news"] = self.news_score.score
+        if self.options_score:
+            breakdown["options"] = self.options_score.score
         return breakdown
 
     @property
@@ -101,6 +106,16 @@ class Recommendation:
                 f"({self.news_data.article_count} articles)"
             )
 
+        if self.options_data and self.options_data.confidence != "none":
+            if self.options_data.sentiment_score >= 0.6:
+                factors.append(
+                    f"Options flow: bullish ({self.options_data.signal_summary})"
+                )
+            if self.options_data.metrics and self.options_data.metrics.put_call_volume_ratio:
+                pcr = self.options_data.metrics.put_call_volume_ratio
+                if pcr < 0.7:
+                    factors.append(f"Put/Call ratio: {pcr:.2f} (bullish)")
+
         return factors
 
     @property
@@ -124,7 +139,91 @@ class Recommendation:
                     f"Negative news sentiment ({self.news_data.bearish_count} bearish articles)"
                 )
 
+        if self.options_data and self.options_data.confidence != "none":
+            if self.options_data.sentiment_score < 0.4:
+                risks.append(
+                    f"Options flow: bearish ({self.options_data.signal_summary})"
+                )
+            if self.options_data.metrics:
+                pcr = self.options_data.metrics.put_call_volume_ratio
+                if pcr and pcr > 1.2:
+                    risks.append(f"High put/call ratio: {pcr:.2f} (bearish)")
+                if self.options_data.metrics.iv_skew and self.options_data.metrics.iv_skew > 0.05:
+                    risks.append("Elevated put IV skew (hedging/fear)")
+
         return risks
+
+    @property
+    def current_price(self) -> float | None:
+        """Get current price from analyst data."""
+        if self.analyst_data:
+            return self.analyst_data.current_price
+        return None
+
+    @property
+    def target_price(self) -> float | None:
+        """Get average analyst target price."""
+        if self.analyst_data:
+            return self.analyst_data.average_target_price
+        return None
+
+    @property
+    def upside_potential(self) -> float | None:
+        """Calculate potential upside percentage to target price."""
+        if self.current_price and self.target_price and self.current_price > 0:
+            return ((self.target_price - self.current_price) / self.current_price) * 100
+        return None
+
+    @property
+    def downside_risk(self) -> float | None:
+        """Estimate downside risk percentage.
+
+        Uses ATM implied volatility if available (annualized, scaled to horizon),
+        otherwise defaults to 15%.
+        """
+        # Try to use options IV for a data-driven estimate
+        if self.options_data and self.options_data.metrics:
+            atm_iv = self.options_data.metrics.atm_iv
+            if atm_iv and atm_iv > 0:
+                # Scale annualized IV to ~3 month horizon (sqrt of time)
+                # ATM IV is already a decimal (e.g., 0.25 = 25%)
+                three_month_move = atm_iv * (0.25 ** 0.5)  # sqrt(3/12)
+                return three_month_move * 100  # Convert to percentage
+
+        # Default downside estimate based on asset type and volatility assumptions
+        if self.asset_type == "crypto":
+            return 25.0  # Crypto is more volatile
+        return 15.0  # Default for stocks
+
+    @property
+    def risk_reward_ratio(self) -> float | None:
+        """Calculate risk/reward ratio (upside / downside).
+
+        A ratio > 2 is generally considered favorable.
+        Returns None if data is insufficient.
+        """
+        upside = self.upside_potential
+        downside = self.downside_risk
+
+        if upside is not None and downside and downside > 0:
+            return upside / downside
+        return None
+
+    @property
+    def risk_reward_label(self) -> str:
+        """Get a label for the risk/reward ratio."""
+        rr = self.risk_reward_ratio
+        if rr is None:
+            return "N/A"
+        if rr >= 3.0:
+            return "Excellent"
+        if rr >= 2.0:
+            return "Good"
+        if rr >= 1.0:
+            return "Fair"
+        if rr >= 0.5:
+            return "Poor"
+        return "Unfavorable"
 
 
 class RecommendationEngine:
@@ -135,6 +234,7 @@ class RecommendationEngine:
         self.analyst_fetcher = AnalystDataFetcher()
         self.betting_fetcher = BettingMarketFetcher()
         self.news_aggregator = NewsAggregator()
+        self.options_fetcher = OptionsDataFetcher()
         self.stock_screener = StockScreener()
         self.crypto_screener = CryptoScreener()
 
@@ -142,6 +242,7 @@ class RecommendationEngine:
         self._analyst_weight = config.analyst_weight
         self._betting_weight = config.betting_weight
         self._news_weight = config.news_weight
+        self._options_weight = config.get("weights", "options", default=0.15)
 
         # Thresholds
         self._strong_buy_threshold = config.get(
@@ -160,6 +261,7 @@ class RecommendationEngine:
             self.analyst_fetcher.close(),
             self.betting_fetcher.close(),
             self.news_aggregator.close(),
+            self.options_fetcher.close(),
             self.stock_screener.close(),
             self.crypto_screener.close(),
         )
@@ -185,18 +287,27 @@ class RecommendationEngine:
         betting_task = self.betting_fetcher.get_market_sentiment(symbol, asset_type)
         news_task = self.news_aggregator.get_news_sentiment(symbol, asset_type)
 
-        analyst_data, betting_data, news_data = await asyncio.gather(
-            analyst_task, betting_task, news_task
-        )
+        # Options data only available for stocks
+        if asset_type == "stock":
+            options_task = self.options_fetcher.get_options_sentiment(symbol)
+            analyst_data, betting_data, news_data, options_data = await asyncio.gather(
+                analyst_task, betting_task, news_task, options_task
+            )
+        else:
+            analyst_data, betting_data, news_data = await asyncio.gather(
+                analyst_task, betting_task, news_task
+            )
+            options_data = None
 
         # Calculate individual scores
         analyst_score = self._calculate_analyst_score(analyst_data)
         betting_score = self._calculate_betting_score(betting_data)
         news_score = self._calculate_news_score(news_data)
+        options_score = self._calculate_options_score(options_data) if options_data else None
 
         # Calculate weighted overall score
         overall_score = self._calculate_overall_score(
-            analyst_score, betting_score, news_score
+            analyst_score, betting_score, news_score, options_score
         )
 
         # Determine recommendation type
@@ -204,7 +315,7 @@ class RecommendationEngine:
 
         # Determine confidence level
         confidence = self._calculate_confidence(
-            analyst_score, betting_score, news_score
+            analyst_score, betting_score, news_score, options_score
         )
 
         return Recommendation(
@@ -216,9 +327,11 @@ class RecommendationEngine:
             analyst_score=analyst_score,
             betting_score=betting_score,
             news_score=news_score,
+            options_score=options_score,
             analyst_data=analyst_data,
             betting_data=betting_data,
             news_data=news_data,
+            options_data=options_data,
             horizon_months=config.horizon_months,
         )
 
@@ -303,11 +416,46 @@ class RecommendationEngine:
             details=details,
         )
 
+    def _calculate_options_score(
+        self, data: OptionsSentiment
+    ) -> DataSourceScore:
+        """Calculate score from options sentiment data."""
+        score = data.sentiment_score
+        confidence = data.confidence
+
+        details = {
+            "put_call_signal": data.put_call_signal,
+            "iv_signal": data.iv_signal,
+            "unusual_activity_signal": data.unusual_activity_signal,
+            "signal_summary": data.signal_summary,
+        }
+
+        if data.metrics:
+            details.update({
+                "put_call_volume_ratio": data.metrics.put_call_volume_ratio,
+                "put_call_oi_ratio": data.metrics.put_call_oi_ratio,
+                "iv_skew": data.metrics.iv_skew,
+                "atm_iv": data.metrics.atm_iv,
+                "total_call_volume": data.metrics.total_call_volume,
+                "total_put_volume": data.metrics.total_put_volume,
+                "unusual_calls_count": len(data.metrics.unusual_calls),
+                "unusual_puts_count": len(data.metrics.unusual_puts),
+            })
+
+        return DataSourceScore(
+            source="options",
+            score=score,
+            weight=self._options_weight,
+            confidence=confidence,
+            details=details,
+        )
+
     def _calculate_overall_score(
         self,
         analyst: DataSourceScore,
         betting: DataSourceScore,
         news: DataSourceScore,
+        options: DataSourceScore | None = None,
     ) -> float:
         """Calculate weighted overall score.
 
@@ -318,6 +466,10 @@ class RecommendationEngine:
             (betting.score, betting.weight, betting.confidence),
             (news.score, news.weight, news.confidence),
         ]
+
+        # Add options if available (stocks only)
+        if options is not None:
+            scores.append((options.score, options.weight, options.confidence))
 
         # Confidence multipliers
         confidence_mult = {"high": 1.0, "medium": 0.7, "low": 0.4, "none": 0.1}
@@ -353,6 +505,7 @@ class RecommendationEngine:
         analyst: DataSourceScore,
         betting: DataSourceScore,
         news: DataSourceScore,
+        options: DataSourceScore | None = None,
     ) -> str:
         """Calculate overall confidence level."""
         confidence_scores = {"high": 3, "medium": 2, "low": 1, "none": 0}
@@ -362,6 +515,10 @@ class RecommendationEngine:
             confidence_scores[betting.confidence],
             confidence_scores[news.confidence],
         ]
+
+        # Add options if available (stocks only)
+        if options is not None:
+            scores.append(confidence_scores[options.confidence])
 
         avg_score = sum(scores) / len(scores)
 
