@@ -11,6 +11,7 @@ from .config import config
 from .data_sources.analyst import AnalystConsensus, AnalystDataFetcher
 from .data_sources.betting import BettingMarketFetcher, BettingMarketSentiment
 from .data_sources.news import NewsAggregator, NewsSentiment
+from .data_sources.screener import CryptoScreener, StockScreener
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,8 @@ class RecommendationEngine:
         self.analyst_fetcher = AnalystDataFetcher()
         self.betting_fetcher = BettingMarketFetcher()
         self.news_aggregator = NewsAggregator()
+        self.stock_screener = StockScreener()
+        self.crypto_screener = CryptoScreener()
 
         # Weights from config
         self._analyst_weight = config.analyst_weight
@@ -157,6 +160,8 @@ class RecommendationEngine:
             self.analyst_fetcher.close(),
             self.betting_fetcher.close(),
             self.news_aggregator.close(),
+            self.stock_screener.close(),
+            self.crypto_screener.close(),
         )
 
     async def get_recommendation(
@@ -369,14 +374,14 @@ class RecommendationEngine:
 
     async def get_top_picks(
         self,
-        symbols: list[str],
+        symbols: list[str] | None = None,
         asset_type: str = "stock",
         top_n: int | None = None,
     ) -> list[Recommendation]:
-        """Get top picks from a list of symbols.
+        """Get top picks from a list of symbols or discover dynamically.
 
         Args:
-            symbols: List of symbols to analyze
+            symbols: List of symbols to analyze. If None, discovers dynamically.
             asset_type: 'stock' or 'crypto'
             top_n: Number of top picks to return (defaults to config)
 
@@ -385,6 +390,10 @@ class RecommendationEngine:
         """
         if top_n is None:
             top_n = config.top_n
+
+        # If no symbols provided, discover them dynamically
+        if symbols is None:
+            symbols = await self.discover_symbols(asset_type, limit=top_n * 2)
 
         # Get recommendations for all symbols
         tasks = [self.get_recommendation(s, asset_type) for s in symbols]
@@ -399,6 +408,26 @@ class RecommendationEngine:
         valid_recs.sort(key=lambda x: x.overall_score, reverse=True)
 
         return valid_recs[:top_n]
+
+    async def discover_symbols(
+        self, asset_type: str = "stock", limit: int = 30
+    ) -> list[str]:
+        """Dynamically discover symbols to analyze.
+
+        Uses screeners to find stocks/crypto with high analyst interest,
+        trading activity, or market momentum.
+
+        Args:
+            asset_type: 'stock' or 'crypto'
+            limit: Maximum symbols to discover
+
+        Returns:
+            List of symbols to analyze
+        """
+        if asset_type == "crypto":
+            return await self.crypto_screener.discover_cryptos(limit)
+        else:
+            return await self.stock_screener.discover_stocks(limit)
 
     async def get_market_overview(self) -> dict[str, Any]:
         """Get overall market sentiment and overview.
@@ -426,26 +455,3 @@ class RecommendationEngine:
         }
 
 
-# Default symbol lists for quick analysis
-DEFAULT_STOCKS = [
-    # Mega cap tech
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    # Large cap tech
-    "AMD", "NFLX", "CRM", "ORCL", "ADBE", "INTC", "CSCO", "IBM",
-    # Semiconductors
-    "AVGO", "QCOM", "TXN", "MU", "AMAT",
-    # Finance
-    "JPM", "BAC", "WFC", "GS", "MS",
-    # Healthcare
-    "JNJ", "UNH", "PFE", "ABBV", "MRK",
-    # Consumer
-    "WMT", "HD", "MCD", "NKE", "SBUX",
-    # Energy
-    "XOM", "CVX",
-]
-
-DEFAULT_CRYPTO = [
-    "BTC", "ETH", "SOL", "XRP", "ADA",
-    "DOGE", "DOT", "LINK", "AVAX", "MATIC",
-    "SHIB", "LTC", "UNI", "ATOM", "XLM",
-]

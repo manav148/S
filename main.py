@@ -14,8 +14,6 @@ from rich.text import Text
 
 from src.config import config
 from src.recommender import (
-    DEFAULT_CRYPTO,
-    DEFAULT_STOCKS,
     Recommendation,
     RecommendationEngine,
     RecommendationType,
@@ -271,39 +269,54 @@ def analyze(symbol: str, asset_type: str, detailed: bool) -> None:
 @click.option(
     "--symbols",
     "-s",
-    help="Comma-separated list of symbols to analyze",
+    help="Comma-separated list of symbols to analyze (optional - discovers dynamically if not provided)",
 )
 @click.option("--detailed", "-d", is_flag=True, help="Show detailed analysis")
 def picks(
     asset_type: str, top_n: int, symbols: str | None, detailed: bool
 ) -> None:
-    """Get top analyst picks for stocks or crypto.
+    """Get top picks for stocks or crypto.
 
-    Example: recommend picks --type stock --top 5
+    Dynamically discovers stocks/crypto based on:
+    - Analyst ratings (Strong Buy/Buy consensus)
+    - Most actively traded
+    - Market momentum
+
+    Example: recommend picks --type stock --top 10
     """
-    # Determine symbols to analyze
+    # Parse custom symbols if provided
+    custom_symbols = None
     if symbols:
-        symbol_list = [s.strip().upper() for s in symbols.split(",")]
-        # Infer asset type if not specified
+        custom_symbols = [s.strip().upper() for s in symbols.split(",")]
         if asset_type == "both":
             asset_type = "stock"  # Default to stock for custom symbols
-        types_and_symbols = [(asset_type, symbol_list)]
-    else:
-        types_and_symbols = []
-        if asset_type in ("stock", "both"):
-            types_and_symbols.append(("stock", DEFAULT_STOCKS))
-        if asset_type in ("crypto", "both"):
-            types_and_symbols.append(("crypto", DEFAULT_CRYPTO))
 
     async def run() -> list[Recommendation]:
         engine = RecommendationEngine()
         all_recs: list[Recommendation] = []
 
         try:
-            for atype, syms in types_and_symbols:
-                console.print(f"[dim]Analyzing {len(syms)} {atype}s...[/]")
-                recs = await engine.get_top_picks(syms, atype, top_n=top_n)
+            if custom_symbols:
+                # Use provided symbols
+                console.print(f"[dim]Analyzing {len(custom_symbols)} {asset_type}s...[/]")
+                recs = await engine.get_top_picks(custom_symbols, asset_type, top_n=top_n)
                 all_recs.extend(recs)
+            else:
+                # Dynamically discover and analyze
+                if asset_type in ("stock", "both"):
+                    console.print("[dim]Discovering top stocks (analyst picks + most active)...[/]")
+                    stock_symbols = await engine.discover_symbols("stock", limit=top_n * 2)
+                    console.print(f"[dim]Analyzing {len(stock_symbols)} stocks...[/]")
+                    recs = await engine.get_top_picks(stock_symbols, "stock", top_n=top_n)
+                    all_recs.extend(recs)
+
+                if asset_type in ("crypto", "both"):
+                    console.print("[dim]Discovering top cryptos (market cap + trending)...[/]")
+                    crypto_symbols = await engine.discover_symbols("crypto", limit=top_n * 2)
+                    console.print(f"[dim]Analyzing {len(crypto_symbols)} cryptos...[/]")
+                    recs = await engine.get_top_picks(crypto_symbols, "crypto", top_n=top_n)
+                    all_recs.extend(recs)
+
         finally:
             await engine.close()
 

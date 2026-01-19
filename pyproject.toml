@@ -16,6 +16,8 @@ dependencies = [
     "rich>=13.7.0",
     "typing-extensions>=4.9.0",
     "yfinance>=0.2.36",
+    "streamlit>=1.31.0",
+    "plotly>=5.18.0",
 ]
 
 [project.scripts]
