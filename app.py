@@ -280,13 +280,14 @@ def render_top_picks():
             axis=1
         )
         df["Analysts"] = df.apply(lambda r: f"{r['analyst_score']:.0%} ({r['analyst_count']})", axis=1)
+        df["Markets"] = df["betting_score"].apply(lambda x: f"{x:.0%}" if x else "-")
         df["Options"] = df.apply(
             lambda r: f"{r['options_score']:.0%}" if r.get("options_confidence", "none") != "none" else "-",
             axis=1
         )
 
-        display_df = df[["symbol", "recommendation", "Score", "Target", "Upside", "R/R", "Analysts", "Options", "confidence"]]
-        display_df.columns = ["Symbol", "Rec", "Score", "Target", "Upside", "R/R", "Analysts", "Options", "Conf"]
+        display_df = df[["symbol", "recommendation", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "confidence"]]
+        display_df.columns = ["Symbol", "Rec", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Conf"]
 
         st.dataframe(
             display_df,

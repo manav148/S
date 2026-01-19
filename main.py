@@ -253,6 +253,7 @@ def format_summary_table(recommendations: list[Recommendation]) -> Table:
     table.add_column("Upside", justify="right")
     table.add_column("R/R", justify="right")
     table.add_column("Analysts", justify="right")
+    table.add_column("Markets", justify="right")
     table.add_column("Options", justify="right")
     table.add_column("Conf", justify="center")
 
@@ -262,6 +263,7 @@ def format_summary_table(recommendations: list[Recommendation]) -> Table:
 
         analyst_count = rec.analyst_data.total_analysts if rec.analyst_data else 0
         analyst_score = f"{rec.analyst_score.score:.0%}" if rec.analyst_score else "-"
+        betting_score = f"{rec.betting_score.score:.0%}" if rec.betting_score else "-"
         options_score = f"{rec.options_score.score:.0%}" if rec.options_score else "-"
 
         # Target price
@@ -296,6 +298,7 @@ def format_summary_table(recommendations: list[Recommendation]) -> Table:
             upside,
             rr,
             Text(f"{analyst_score} ({analyst_count})", style=score_style(rec.analyst_score)),
+            Text(betting_score, style=score_style(rec.betting_score)),
             Text(options_score, style=score_style(rec.options_score)),
             Text(rec.confidence[:3], style=conf_color),
         )
