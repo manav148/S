@@ -306,6 +306,7 @@ def render_sidebar():
         - Prediction markets (Polymarket)
         - News sentiment (RSS feeds)
         - Options flow (stocks only)
+        - Technicals (Finviz)
         """
     )
 
