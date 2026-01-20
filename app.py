@@ -364,6 +364,7 @@ def render_top_picks():
         # Table
         df = pd.DataFrame(picks)
         df["Score"] = df["overall_score"].apply(lambda x: f"{x:.1%}")
+        df["Price"] = df["current_price"].apply(lambda x: f"${x:,.2f}" if x else "-")
         df["Target"] = df["target_price"].apply(lambda x: f"${x:,.0f}" if x else "-")
         df["Upside"] = df["upside_potential"].apply(lambda x: f"{x:+.1f}%" if x is not None else "-")
         df["R/R"] = df.apply(
@@ -376,24 +377,79 @@ def render_top_picks():
             lambda r: f"{r['options_score']:.0%}" if r.get("options_confidence", "none") != "none" else "-",
             axis=1
         )
-        df["Finviz"] = df.apply(
+        df["Technicals"] = df.apply(
             lambda r: f"{r['finviz_score']:.0%}" if r.get("finviz_confidence", "none") != "none" else "-",
             axis=1
         )
 
-        display_df = df[["symbol", "recommendation", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Finviz", "confidence"]]
-        display_df.columns = ["Symbol", "Rec", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Finviz", "Conf"]
+        display_df = df[["symbol", "recommendation", "Score", "Price", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Technicals", "confidence"]]
+        display_df.columns = ["Symbol", "Rec", "Score", "Price", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Technicals", "Conf"]
 
         st.dataframe(
             display_df,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Symbol": st.column_config.TextColumn("Symbol", width="small"),
-                "Score": st.column_config.TextColumn("Score", width="small"),
-                "Target": st.column_config.TextColumn("Target", width="small"),
-                "Upside": st.column_config.TextColumn("Upside", width="small"),
-                "R/R": st.column_config.TextColumn("R/R", width="medium"),
+                "Symbol": st.column_config.TextColumn(
+                    "Symbol",
+                    width="small",
+                    help="Stock ticker or crypto symbol"
+                ),
+                "Rec": st.column_config.TextColumn(
+                    "Rec",
+                    width="small",
+                    help="Recommendation based on overall score: Strong Buy (≥80%), Buy (≥60%), Hold (≥40%), Sell (<40%)"
+                ),
+                "Score": st.column_config.TextColumn(
+                    "Score",
+                    width="small",
+                    help="Weighted average of all data sources (Analysts, Markets, News, Options, Technicals). Weights configurable in Settings."
+                ),
+                "Price": st.column_config.TextColumn(
+                    "Price",
+                    width="small",
+                    help="Current market price from Yahoo Finance"
+                ),
+                "Target": st.column_config.TextColumn(
+                    "Target",
+                    width="small",
+                    help="Consensus analyst price target from Yahoo Finance"
+                ),
+                "Upside": st.column_config.TextColumn(
+                    "Upside",
+                    width="small",
+                    help="Percentage difference between current price and analyst target price: (Target - Current) / Current × 100"
+                ),
+                "R/R": st.column_config.TextColumn(
+                    "R/R",
+                    width="medium",
+                    help="Risk/Reward ratio = Upside Potential / Downside Risk. Downside estimated from ATM implied volatility or default 15%. Values ≥2.0 are favorable."
+                ),
+                "Analysts": st.column_config.TextColumn(
+                    "Analysts",
+                    width="small",
+                    help="Analyst score (count). Score based on rating distribution: Strong Buy=1.0, Buy=0.75, Hold=0.5, Sell=0.25, Strong Sell=0.0. Weighted average of all ratings."
+                ),
+                "Markets": st.column_config.TextColumn(
+                    "Markets",
+                    width="small",
+                    help="Polymarket prediction market score. Based on market probability for positive outcomes. Higher = more bullish market sentiment."
+                ),
+                "Options": st.column_config.TextColumn(
+                    "Options",
+                    width="small",
+                    help="Options flow score from put/call ratio (40%), IV skew (30%), and unusual activity (30%). Low P/C ratio & bullish unusual activity = higher score."
+                ),
+                "Technicals": st.column_config.TextColumn(
+                    "Technicals",
+                    width="small",
+                    help="Technical analysis score from Finviz: technicals (30%: RSI, SMA trends), valuation (30%: P/E, PEG, P/B), insider activity (25%), and inverse short interest (15%)."
+                ),
+                "Conf": st.column_config.TextColumn(
+                    "Conf",
+                    width="small",
+                    help="Confidence level based on data availability: High (3+ sources with data), Medium (2 sources), Low (1 source or limited data)"
+                ),
             },
         )
 
@@ -514,11 +570,11 @@ def render_analyze():
                 values.append(data["options_score"])
                 colors.append("#9c27b0")  # Purple for options
 
-            # Add finviz if available
+            # Add technicals (finviz) if available
             if data.get("finviz_confidence", "none") != "none":
-                labels.append("Finviz")
+                labels.append("Technicals")
                 values.append(data["finviz_score"])
-                colors.append("#e91e63")  # Pink for finviz
+                colors.append("#e91e63")  # Pink for technicals
 
             fig = go.Figure(
                 data=[
