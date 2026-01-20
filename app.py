@@ -329,7 +329,7 @@ def render_top_picks():
         top_n = st.slider("Number of Picks", min_value=5, max_value=30, value=15)
 
     with col3:
-        include_technicals = st.toggle("Technical Analysis", value=True, help="Include Finviz technicals (slower but more data)")
+        include_technicals = st.toggle("Finviz Data", value=True, help="Include Finviz data (price, technicals, valuation). Required on cloud where Yahoo Finance is blocked.")
 
     with col4:
         st.write("")  # Spacer
