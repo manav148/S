@@ -35,11 +35,12 @@ def run_async(coro):
 
 # Cached data fetching
 @st.cache_data(ttl=300)  # Cache for 5 minutes
-def get_top_picks(asset_type: str, top_n: int) -> list[dict]:
+def get_top_picks(asset_type: str, top_n: int, include_technicals: bool = True) -> list[dict]:
     """Fetch top picks and convert to serializable format."""
 
     async def fetch():
         engine = RecommendationEngine()
+        engine.include_technicals = include_technicals
         try:
             symbols = await engine.discover_symbols(asset_type, limit=top_n * 2)
             recs = await engine.get_top_picks(symbols, asset_type, top_n=top_n)
@@ -319,7 +320,7 @@ def render_top_picks():
     st.markdown("Dynamically discover and analyze stocks/crypto based on analyst ratings and market activity.")
 
     # Controls
-    col1, col2, col3 = st.columns([1, 1, 2])
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
 
     with col1:
         asset_type = st.selectbox("Asset Type", ["stock", "crypto", "both"])
@@ -328,17 +329,20 @@ def render_top_picks():
         top_n = st.slider("Number of Picks", min_value=5, max_value=30, value=15)
 
     with col3:
+        include_technicals = st.toggle("Technical Analysis", value=True, help="Include Finviz technicals (slower but more data)")
+
+    with col4:
         st.write("")  # Spacer
 
     # Fetch button
     if st.button("🔄 Discover & Analyze", type="primary"):
         with st.spinner("Discovering and analyzing..."):
             if asset_type == "both":
-                stocks = get_top_picks("stock", top_n // 2)
-                crypto = get_top_picks("crypto", top_n // 2)
+                stocks = get_top_picks("stock", top_n // 2, include_technicals)
+                crypto = get_top_picks("crypto", top_n // 2, include_technicals)
                 picks = sorted(stocks + crypto, key=lambda x: x["overall_score"], reverse=True)[:top_n]
             else:
-                picks = get_top_picks(asset_type, top_n)
+                picks = get_top_picks(asset_type, top_n, include_technicals)
 
             st.session_state["picks"] = picks
 

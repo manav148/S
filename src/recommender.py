@@ -294,6 +294,9 @@ class RecommendationEngine:
         self.stock_screener = StockScreener()
         self.crypto_screener = CryptoScreener()
 
+        # Feature flags
+        self.include_technicals = True  # Whether to fetch Finviz/technical data
+
         # Weights from config
         self._analyst_weight = config.analyst_weight
         self._betting_weight = config.betting_weight
@@ -348,10 +351,17 @@ class RecommendationEngine:
         # Options and Finviz data only available for stocks
         if asset_type == "stock":
             options_task = self.options_fetcher.get_options_sentiment(symbol)
-            finviz_task = self.finviz_fetcher.get_stock_data(symbol)
-            analyst_data, betting_data, news_data, options_data, finviz_data = await asyncio.gather(
-                analyst_task, betting_task, news_task, options_task, finviz_task
-            )
+            # Only fetch Finviz if technicals are enabled
+            if self.include_technicals:
+                finviz_task = self.finviz_fetcher.get_stock_data(symbol)
+                analyst_data, betting_data, news_data, options_data, finviz_data = await asyncio.gather(
+                    analyst_task, betting_task, news_task, options_task, finviz_task
+                )
+            else:
+                analyst_data, betting_data, news_data, options_data = await asyncio.gather(
+                    analyst_task, betting_task, news_task, options_task
+                )
+                finviz_data = None
         else:
             analyst_data, betting_data, news_data = await asyncio.gather(
                 analyst_task, betting_task, news_task
