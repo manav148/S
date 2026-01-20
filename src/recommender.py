@@ -10,6 +10,7 @@ from typing import Any
 from .config import config
 from .data_sources.analyst import AnalystConsensus, AnalystDataFetcher
 from .data_sources.betting import BettingMarketFetcher, BettingMarketSentiment
+from .data_sources.finviz import FinvizData, FinvizFetcher
 from .data_sources.news import NewsAggregator, NewsSentiment
 from .data_sources.options import OptionsDataFetcher, OptionsSentiment
 from .data_sources.screener import CryptoScreener, StockScreener
@@ -53,12 +54,14 @@ class Recommendation:
     betting_score: DataSourceScore | None = None
     news_score: DataSourceScore | None = None
     options_score: DataSourceScore | None = None
+    finviz_score: DataSourceScore | None = None
 
     # Raw data
     analyst_data: AnalystConsensus | None = None
     betting_data: BettingMarketSentiment | None = None
     news_data: NewsSentiment | None = None
     options_data: OptionsSentiment | None = None
+    finviz_data: FinvizData | None = None
 
     # Metadata
     generated_at: datetime = field(default_factory=datetime.now)
@@ -76,6 +79,8 @@ class Recommendation:
             breakdown["news"] = self.news_score.score
         if self.options_score:
             breakdown["options"] = self.options_score.score
+        if self.finviz_score:
+            breakdown["finviz"] = self.finviz_score.score
         return breakdown
 
     @property
@@ -116,6 +121,29 @@ class Recommendation:
                 if pcr < 0.7:
                     factors.append(f"Put/Call ratio: {pcr:.2f} (bullish)")
 
+        if self.finviz_data:
+            # Technical signals
+            if self.finviz_data.technicals:
+                tech = self.finviz_data.technicals
+                if tech.overall_signal.value >= 4:
+                    factors.append(f"Finviz technicals: {tech.overall_signal.name}")
+                if tech.rsi and tech.rsi <= 35:
+                    factors.append(f"RSI oversold: {tech.rsi:.0f}")
+
+            # Valuation signals
+            if self.finviz_data.valuation:
+                val = self.finviz_data.valuation
+                if val.valuation_score >= 0.7:
+                    factors.append(f"Finviz valuation: attractive ({val.pe_signal})")
+                if val.peg and 0 < val.peg < 1:
+                    factors.append(f"PEG ratio: {val.peg:.2f} (undervalued)")
+
+            # Insider activity
+            if self.finviz_data.insider_activity and self.finviz_data.insider_activity.trades:
+                insider = self.finviz_data.insider_activity
+                if insider.sentiment.value >= 4:
+                    factors.append(f"Insider activity: {insider.sentiment.name}")
+
         return factors
 
     @property
@@ -150,6 +178,33 @@ class Recommendation:
                     risks.append(f"High put/call ratio: {pcr:.2f} (bearish)")
                 if self.options_data.metrics.iv_skew and self.options_data.metrics.iv_skew > 0.05:
                     risks.append("Elevated put IV skew (hedging/fear)")
+
+        if self.finviz_data:
+            # Technical risks
+            if self.finviz_data.technicals:
+                tech = self.finviz_data.technicals
+                if tech.overall_signal.value <= 2:
+                    risks.append(f"Finviz technicals: {tech.overall_signal.name}")
+                if tech.rsi and tech.rsi >= 70:
+                    risks.append(f"RSI overbought: {tech.rsi:.0f}")
+
+            # Valuation risks
+            if self.finviz_data.valuation:
+                val = self.finviz_data.valuation
+                if val.valuation_score <= 0.3:
+                    risks.append(f"Finviz valuation: {val.pe_signal}")
+                if val.peg and val.peg > 2:
+                    risks.append(f"High PEG ratio: {val.peg:.2f}")
+
+            # Insider selling
+            if self.finviz_data.insider_activity and self.finviz_data.insider_activity.trades:
+                insider = self.finviz_data.insider_activity
+                if insider.sentiment.value <= 2:
+                    risks.append(f"Insider activity: {insider.sentiment.name}")
+
+            # Short interest
+            if self.finviz_data.short_float and self.finviz_data.short_float > 15:
+                risks.append(f"High short interest: {self.finviz_data.short_float:.1f}%")
 
         return risks
 
@@ -235,6 +290,7 @@ class RecommendationEngine:
         self.betting_fetcher = BettingMarketFetcher()
         self.news_aggregator = NewsAggregator()
         self.options_fetcher = OptionsDataFetcher()
+        self.finviz_fetcher = FinvizFetcher()
         self.stock_screener = StockScreener()
         self.crypto_screener = CryptoScreener()
 
@@ -243,6 +299,7 @@ class RecommendationEngine:
         self._betting_weight = config.betting_weight
         self._news_weight = config.news_weight
         self._options_weight = config.get("weights", "options", default=0.15)
+        self._finviz_weight = config.get("weights", "finviz", default=0.15)
 
         # Thresholds
         self._strong_buy_threshold = config.get(
@@ -262,6 +319,7 @@ class RecommendationEngine:
             self.betting_fetcher.close(),
             self.news_aggregator.close(),
             self.options_fetcher.close(),
+            self.finviz_fetcher.close(),
             self.stock_screener.close(),
             self.crypto_screener.close(),
         )
@@ -287,27 +345,30 @@ class RecommendationEngine:
         betting_task = self.betting_fetcher.get_market_sentiment(symbol, asset_type)
         news_task = self.news_aggregator.get_news_sentiment(symbol, asset_type)
 
-        # Options data only available for stocks
+        # Options and Finviz data only available for stocks
         if asset_type == "stock":
             options_task = self.options_fetcher.get_options_sentiment(symbol)
-            analyst_data, betting_data, news_data, options_data = await asyncio.gather(
-                analyst_task, betting_task, news_task, options_task
+            finviz_task = self.finviz_fetcher.get_stock_data(symbol)
+            analyst_data, betting_data, news_data, options_data, finviz_data = await asyncio.gather(
+                analyst_task, betting_task, news_task, options_task, finviz_task
             )
         else:
             analyst_data, betting_data, news_data = await asyncio.gather(
                 analyst_task, betting_task, news_task
             )
             options_data = None
+            finviz_data = None
 
         # Calculate individual scores
         analyst_score = self._calculate_analyst_score(analyst_data)
         betting_score = self._calculate_betting_score(betting_data)
         news_score = self._calculate_news_score(news_data)
         options_score = self._calculate_options_score(options_data) if options_data else None
+        finviz_score = self._calculate_finviz_score(finviz_data) if finviz_data else None
 
         # Calculate weighted overall score
         overall_score = self._calculate_overall_score(
-            analyst_score, betting_score, news_score, options_score
+            analyst_score, betting_score, news_score, options_score, finviz_score
         )
 
         # Determine recommendation type
@@ -315,7 +376,7 @@ class RecommendationEngine:
 
         # Determine confidence level
         confidence = self._calculate_confidence(
-            analyst_score, betting_score, news_score, options_score
+            analyst_score, betting_score, news_score, options_score, finviz_score
         )
 
         return Recommendation(
@@ -328,10 +389,12 @@ class RecommendationEngine:
             betting_score=betting_score,
             news_score=news_score,
             options_score=options_score,
+            finviz_score=finviz_score,
             analyst_data=analyst_data,
             betting_data=betting_data,
             news_data=news_data,
             options_data=options_data,
+            finviz_data=finviz_data,
             horizon_months=config.horizon_months,
         )
 
@@ -450,12 +513,76 @@ class RecommendationEngine:
             details=details,
         )
 
+    def _calculate_finviz_score(
+        self, data: FinvizData
+    ) -> DataSourceScore:
+        """Calculate score from Finviz data."""
+        score = data.overall_score
+        confidence = "none"
+
+        # Determine confidence based on data completeness
+        has_technicals = data.technicals is not None
+        has_valuation = data.valuation is not None
+        has_insider = data.insider_activity is not None and len(data.insider_activity.trades) > 0
+
+        data_points = sum([has_technicals, has_valuation, has_insider])
+        if data_points >= 3:
+            confidence = "high"
+        elif data_points >= 2:
+            confidence = "medium"
+        elif data_points >= 1:
+            confidence = "low"
+
+        details = {
+            "signal_summary": data.signal_summary,
+            "price": data.price,
+            "change": data.change,
+            "short_float": data.short_float,
+            "short_ratio": data.short_ratio,
+            "analyst_recommendation": data.analyst_recommendation,
+            "target_price": data.target_price,
+        }
+
+        if data.technicals:
+            details.update({
+                "rsi": data.technicals.rsi,
+                "sma20": data.technicals.sma20,
+                "sma50": data.technicals.sma50,
+                "sma200": data.technicals.sma200,
+                "technical_signal": data.technicals.overall_signal.name,
+            })
+
+        if data.valuation:
+            details.update({
+                "pe": data.valuation.pe,
+                "forward_pe": data.valuation.forward_pe,
+                "peg": data.valuation.peg,
+                "pb": data.valuation.pb,
+                "valuation_score": data.valuation.valuation_score,
+            })
+
+        if data.insider_activity:
+            details.update({
+                "insider_buy_count": data.insider_activity.buy_count,
+                "insider_sell_count": data.insider_activity.sell_count,
+                "insider_sentiment": data.insider_activity.sentiment.name,
+            })
+
+        return DataSourceScore(
+            source="finviz",
+            score=score,
+            weight=self._finviz_weight,
+            confidence=confidence,
+            details=details,
+        )
+
     def _calculate_overall_score(
         self,
         analyst: DataSourceScore,
         betting: DataSourceScore,
         news: DataSourceScore,
         options: DataSourceScore | None = None,
+        finviz: DataSourceScore | None = None,
     ) -> float:
         """Calculate weighted overall score.
 
@@ -470,6 +597,10 @@ class RecommendationEngine:
         # Add options if available (stocks only)
         if options is not None:
             scores.append((options.score, options.weight, options.confidence))
+
+        # Add finviz if available (stocks only)
+        if finviz is not None:
+            scores.append((finviz.score, finviz.weight, finviz.confidence))
 
         # Confidence multipliers
         confidence_mult = {"high": 1.0, "medium": 0.7, "low": 0.4, "none": 0.1}
@@ -506,6 +637,7 @@ class RecommendationEngine:
         betting: DataSourceScore,
         news: DataSourceScore,
         options: DataSourceScore | None = None,
+        finviz: DataSourceScore | None = None,
     ) -> str:
         """Calculate overall confidence level."""
         confidence_scores = {"high": 3, "medium": 2, "low": 1, "none": 0}
@@ -519,6 +651,10 @@ class RecommendationEngine:
         # Add options if available (stocks only)
         if options is not None:
             scores.append(confidence_scores[options.confidence])
+
+        # Add finviz if available (stocks only)
+        if finviz is not None:
+            scores.append(confidence_scores[finviz.confidence])
 
         avg_score = sum(scores) / len(scores)
 

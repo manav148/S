@@ -181,6 +181,97 @@ def rec_to_dict(rec: Recommendation) -> dict:
             "unusual_puts": [],
         })
 
+    # Add Finviz data if available
+    if rec.finviz_data:
+        finviz = rec.finviz_data
+        result.update({
+            "finviz_score": rec.finviz_score.score if rec.finviz_score else 0.5,
+            "finviz_confidence": rec.finviz_score.confidence if rec.finviz_score else "none",
+            "finviz_signal": finviz.signal_summary,
+            "finviz_change": finviz.change,
+            "finviz_short_float": finviz.short_float,
+            "finviz_short_ratio": finviz.short_ratio,
+            "finviz_analyst_rec": finviz.analyst_recommendation,
+            "finviz_target": finviz.target_price,
+        })
+
+        # Technicals
+        if finviz.technicals:
+            result.update({
+                "finviz_rsi": finviz.technicals.rsi,
+                "finviz_sma20": finviz.technicals.sma20,
+                "finviz_sma50": finviz.technicals.sma50,
+                "finviz_sma200": finviz.technicals.sma200,
+                "finviz_tech_signal": finviz.technicals.overall_signal.name,
+                "finviz_beta": finviz.technicals.beta,
+            })
+        else:
+            result.update({
+                "finviz_rsi": None,
+                "finviz_sma20": None,
+                "finviz_sma50": None,
+                "finviz_sma200": None,
+                "finviz_tech_signal": "N/A",
+                "finviz_beta": None,
+            })
+
+        # Valuation
+        if finviz.valuation:
+            result.update({
+                "finviz_pe": finviz.valuation.pe,
+                "finviz_forward_pe": finviz.valuation.forward_pe,
+                "finviz_peg": finviz.valuation.peg,
+                "finviz_pb": finviz.valuation.pb,
+                "finviz_val_score": finviz.valuation.valuation_score,
+            })
+        else:
+            result.update({
+                "finviz_pe": None,
+                "finviz_forward_pe": None,
+                "finviz_peg": None,
+                "finviz_pb": None,
+                "finviz_val_score": None,
+            })
+
+        # Insider activity
+        if finviz.insider_activity:
+            result.update({
+                "finviz_insider_buys": finviz.insider_activity.buy_count,
+                "finviz_insider_sells": finviz.insider_activity.sell_count,
+                "finviz_insider_sentiment": finviz.insider_activity.sentiment.name,
+            })
+        else:
+            result.update({
+                "finviz_insider_buys": 0,
+                "finviz_insider_sells": 0,
+                "finviz_insider_sentiment": "NEUTRAL",
+            })
+    else:
+        result.update({
+            "finviz_score": 0.5,
+            "finviz_confidence": "none",
+            "finviz_signal": "N/A",
+            "finviz_change": None,
+            "finviz_short_float": None,
+            "finviz_short_ratio": None,
+            "finviz_analyst_rec": None,
+            "finviz_target": None,
+            "finviz_rsi": None,
+            "finviz_sma20": None,
+            "finviz_sma50": None,
+            "finviz_sma200": None,
+            "finviz_tech_signal": "N/A",
+            "finviz_beta": None,
+            "finviz_pe": None,
+            "finviz_forward_pe": None,
+            "finviz_peg": None,
+            "finviz_pb": None,
+            "finviz_val_score": None,
+            "finviz_insider_buys": 0,
+            "finviz_insider_sells": 0,
+            "finviz_insider_sentiment": "NEUTRAL",
+        })
+
     return result
 
 
@@ -285,9 +376,13 @@ def render_top_picks():
             lambda r: f"{r['options_score']:.0%}" if r.get("options_confidence", "none") != "none" else "-",
             axis=1
         )
+        df["Finviz"] = df.apply(
+            lambda r: f"{r['finviz_score']:.0%}" if r.get("finviz_confidence", "none") != "none" else "-",
+            axis=1
+        )
 
-        display_df = df[["symbol", "recommendation", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "confidence"]]
-        display_df.columns = ["Symbol", "Rec", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Conf"]
+        display_df = df[["symbol", "recommendation", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Finviz", "confidence"]]
+        display_df.columns = ["Symbol", "Rec", "Score", "Target", "Upside", "R/R", "Analysts", "Markets", "Options", "Finviz", "Conf"]
 
         st.dataframe(
             display_df,
@@ -418,6 +513,12 @@ def render_analyze():
                 labels.append("Options")
                 values.append(data["options_score"])
                 colors.append("#9c27b0")  # Purple for options
+
+            # Add finviz if available
+            if data.get("finviz_confidence", "none") != "none":
+                labels.append("Finviz")
+                values.append(data["finviz_score"])
+                colors.append("#e91e63")  # Pink for finviz
 
             fig = go.Figure(
                 data=[
@@ -586,6 +687,88 @@ def render_analyze():
                                 f"- ${item['strike']} strike: {item['volume']:,} vol / "
                                 f"{item['open_interest']:,} OI ({item['volume_oi_ratio']:.1f}x)"
                             )
+
+        # Finviz data (stocks only)
+        if data.get("finviz_confidence", "none") != "none":
+            st.subheader("📈 Finviz Analysis")
+
+            # Top-level metrics
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric("Finviz Score", f"{data['finviz_score']:.1%}")
+
+            with col2:
+                tech_signal = data.get("finviz_tech_signal", "N/A")
+                st.metric("Technical Signal", tech_signal.replace("_", " ").title())
+
+            with col3:
+                rsi = data.get("finviz_rsi")
+                if rsi is not None:
+                    rsi_status = "Oversold" if rsi <= 30 else "Overbought" if rsi >= 70 else "Neutral"
+                    st.metric("RSI (14)", f"{rsi:.0f}", delta=rsi_status)
+                else:
+                    st.metric("RSI (14)", "-")
+
+            with col4:
+                short_float = data.get("finviz_short_float")
+                if short_float is not None:
+                    st.metric("Short Float", f"{short_float:.1f}%")
+                else:
+                    st.metric("Short Float", "-")
+
+            # SMA Trends
+            st.markdown("**Moving Average Trends:**")
+            sma_cols = st.columns(3)
+            with sma_cols[0]:
+                sma20 = data.get("finviz_sma20", "-")
+                st.markdown(f"• SMA20: {sma20}")
+            with sma_cols[1]:
+                sma50 = data.get("finviz_sma50", "-")
+                st.markdown(f"• SMA50: {sma50}")
+            with sma_cols[2]:
+                sma200 = data.get("finviz_sma200", "-")
+                st.markdown(f"• SMA200: {sma200}")
+
+            # Valuation Metrics
+            st.markdown("---")
+            st.markdown("**Valuation Metrics:**")
+            val_cols = st.columns(5)
+
+            with val_cols[0]:
+                pe = data.get("finviz_pe")
+                st.metric("P/E", f"{pe:.1f}" if pe else "-")
+
+            with val_cols[1]:
+                fwd_pe = data.get("finviz_forward_pe")
+                st.metric("Fwd P/E", f"{fwd_pe:.1f}" if fwd_pe else "-")
+
+            with val_cols[2]:
+                peg = data.get("finviz_peg")
+                st.metric("PEG", f"{peg:.2f}" if peg else "-")
+
+            with val_cols[3]:
+                pb = data.get("finviz_pb")
+                st.metric("P/B", f"{pb:.2f}" if pb else "-")
+
+            with val_cols[4]:
+                val_score = data.get("finviz_val_score")
+                st.metric("Val Score", f"{val_score:.0%}" if val_score else "-")
+
+            # Insider Activity
+            insider_buys = data.get("finviz_insider_buys", 0)
+            insider_sells = data.get("finviz_insider_sells", 0)
+            if insider_buys > 0 or insider_sells > 0:
+                st.markdown("---")
+                st.markdown("**Insider Activity:**")
+                insider_cols = st.columns(3)
+                with insider_cols[0]:
+                    st.metric("Insider Buys", insider_buys)
+                with insider_cols[1]:
+                    st.metric("Insider Sells", insider_sells)
+                with insider_cols[2]:
+                    sentiment = data.get("finviz_insider_sentiment", "NEUTRAL")
+                    st.metric("Sentiment", sentiment.replace("_", " ").title())
 
 
 def render_polymarket():

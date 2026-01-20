@@ -26,3 +26,4 @@ cachetools>=5.3.0
 
 # Stock data
 yfinance>=0.2.36
+finviz>=1.4.0
