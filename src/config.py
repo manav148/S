@@ -183,6 +183,56 @@ class Config:
         """Reload configuration from file."""
         self._load_config()
 
+    def set(self, *keys: str, value: Any) -> None:
+        """Set a configuration value at runtime.
+
+        Args:
+            *keys: Configuration keys to traverse (last one is the key to set)
+            value: Value to set
+        """
+        if len(keys) < 2:
+            raise ValueError("Need at least section and key")
+
+        section = keys[0]
+        if section not in self._config:
+            self._config[section] = {}
+
+        # Navigate to the right nested dict
+        current = self._config
+        for key in keys[:-1]:
+            if key not in current:
+                current[key] = {}
+            current = current[key]
+
+        # Set the value
+        current[keys[-1]] = value
+
+    def set_weights(self, analyst: float, betting: float, news: float, options: float) -> None:
+        """Set scoring weights ensuring they sum to 1.0.
+
+        Args:
+            analyst: Weight for analyst ratings
+            betting: Weight for betting markets
+            news: Weight for news sentiment
+            options: Weight for options flow
+        """
+        total = analyst + betting + news + options
+        if total > 0:
+            # Normalize to sum to 1.0
+            self.set("recommendation", "analyst_weight", value=analyst / total)
+            self.set("recommendation", "betting_weight", value=betting / total)
+            self.set("recommendation", "news_weight", value=news / total)
+            self.set("weights", "options", value=options / total)
+
+    def get_all_weights(self) -> dict[str, float]:
+        """Get all scoring weights."""
+        return {
+            "analyst": self.analyst_weight,
+            "betting": self.betting_weight,
+            "news": self.news_weight,
+            "options": self.get("weights", "options", default=0.15),
+        }
+
 
 # Global config instance
 config = Config()

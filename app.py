@@ -642,29 +642,145 @@ def render_polymarket():
                 st.markdown("---")
 
 
+def apply_settings_from_session():
+    """Apply settings from session state to config."""
+    if "settings_applied" not in st.session_state:
+        return
+
+    # Apply analyst settings
+    if "min_analysts" in st.session_state:
+        config.set("analyst", "min_analysts", value=st.session_state.min_analysts)
+    if "max_analysts" in st.session_state:
+        config.set("analyst", "max_analysts", value=st.session_state.max_analysts)
+
+    # Apply weights
+    if all(k in st.session_state for k in ["weight_analyst", "weight_betting", "weight_news", "weight_options"]):
+        config.set_weights(
+            analyst=st.session_state.weight_analyst,
+            betting=st.session_state.weight_betting,
+            news=st.session_state.weight_news,
+            options=st.session_state.weight_options,
+        )
+
+    # Apply thresholds
+    if "threshold_strong_buy" in st.session_state:
+        config.set("recommendation", "strong_buy_threshold", value=st.session_state.threshold_strong_buy / 100)
+    if "threshold_buy" in st.session_state:
+        config.set("recommendation", "buy_threshold", value=st.session_state.threshold_buy / 100)
+    if "threshold_hold" in st.session_state:
+        config.set("recommendation", "hold_threshold", value=st.session_state.threshold_hold / 100)
+
+
 def render_settings():
     """Render the Settings page."""
     st.title("⚙️ Settings")
-    st.markdown("View and configure recommendation settings.")
+    st.markdown("Configure recommendation parameters. Changes apply to new analyses.")
+
+    # Initialize session state with current config values
+    if "settings_initialized" not in st.session_state:
+        st.session_state.min_analysts = config.analyst_min_count
+        st.session_state.max_analysts = config.analyst_max_count
+        st.session_state.weight_analyst = config.analyst_weight
+        st.session_state.weight_betting = config.betting_weight
+        st.session_state.weight_news = config.news_weight
+        st.session_state.weight_options = config.get("weights", "options", default=0.15)
+        st.session_state.threshold_strong_buy = int(config.get("recommendation", "strong_buy_threshold", default=0.8) * 100)
+        st.session_state.threshold_buy = int(config.get("recommendation", "buy_threshold", default=0.6) * 100)
+        st.session_state.threshold_hold = int(config.get("recommendation", "hold_threshold", default=0.4) * 100)
+        st.session_state.settings_initialized = True
+
+    # Analyst Settings
+    st.subheader("📊 Analyst Thresholds")
+    st.markdown("Control how many analysts are required for a valid recommendation.")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("Analyst Settings")
-        st.metric("Min Analysts", config.analyst_min_count)
-        st.metric("Max Analysts", config.analyst_max_count)
-        st.metric("Horizon", f"{config.horizon_months[0]}-{config.horizon_months[1]} months")
+        min_analysts = st.slider(
+            "Minimum Analysts Required",
+            min_value=1,
+            max_value=20,
+            value=st.session_state.min_analysts,
+            key="min_analysts_slider",
+            help="Stocks with fewer analysts will be filtered out. Lower = include more stocks (incl. international ADRs)",
+        )
+        st.session_state.min_analysts = min_analysts
 
     with col2:
-        st.subheader("Scoring Weights")
+        max_analysts = st.slider(
+            "Maximum Analysts to Consider",
+            min_value=5,
+            max_value=50,
+            value=st.session_state.max_analysts,
+            key="max_analysts_slider",
+            help="Cap on number of analysts used in calculations",
+        )
+        st.session_state.max_analysts = max_analysts
 
-        # Weights visualization
-        options_weight = config.get("weights", "options", default=0.15)
+    # Info box for international stocks
+    if min_analysts <= 5:
+        st.info("💡 **Tip:** With min analysts ≤ 5, international ADRs like BABA, TSM, NVO may be included in analysis.")
+
+    st.markdown("---")
+
+    # Scoring Weights
+    st.subheader("⚖️ Scoring Weights")
+    st.markdown("Adjust how different data sources contribute to the final score. Weights auto-normalize to 100%.")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        weight_analyst = st.slider(
+            "Analyst Ratings",
+            min_value=0,
+            max_value=100,
+            value=int(st.session_state.weight_analyst * 100),
+            key="weight_analyst_slider",
+            help="Weight for Wall Street analyst consensus",
+        )
+
+        weight_betting = st.slider(
+            "Prediction Markets",
+            min_value=0,
+            max_value=100,
+            value=int(st.session_state.weight_betting * 100),
+            key="weight_betting_slider",
+            help="Weight for Polymarket prediction market data",
+        )
+
+        weight_news = st.slider(
+            "News Sentiment",
+            min_value=0,
+            max_value=100,
+            value=int(st.session_state.weight_news * 100),
+            key="weight_news_slider",
+            help="Weight for RSS news sentiment analysis",
+        )
+
+        weight_options = st.slider(
+            "Options Flow",
+            min_value=0,
+            max_value=100,
+            value=int(st.session_state.weight_options * 100),
+            key="weight_options_slider",
+            help="Weight for options flow analysis (stocks only)",
+        )
+
+        # Normalize and store
+        total = weight_analyst + weight_betting + weight_news + weight_options
+        if total > 0:
+            st.session_state.weight_analyst = weight_analyst / total
+            st.session_state.weight_betting = weight_betting / total
+            st.session_state.weight_news = weight_news / total
+            st.session_state.weight_options = weight_options / total
+
+    with col2:
+        # Live weight visualization
         weights = {
-            "Analysts": config.analyst_weight,
-            "Betting Markets": config.betting_weight,
-            "News": config.news_weight,
-            "Options": options_weight,
+            "Analysts": st.session_state.weight_analyst,
+            "Markets": st.session_state.weight_betting,
+            "News": st.session_state.weight_news,
+            "Options": st.session_state.weight_options,
         }
 
         fig = go.Figure(
@@ -674,15 +790,96 @@ def render_settings():
                     values=list(weights.values()),
                     hole=0.4,
                     marker_colors=["#2196f3", "#ff9800", "#4caf50", "#9c27b0"],
+                    textinfo="percent",
+                    textposition="inside",
                 )
             ]
         )
-        fig.update_layout(height=300)
+        fig.update_layout(height=280, margin=dict(t=20, b=20, l=20, r=20), showlegend=True)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
 
-    st.subheader("Data Sources")
+    # Recommendation Thresholds
+    st.subheader("🎯 Recommendation Thresholds")
+    st.markdown("Set score thresholds for each recommendation level.")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        threshold_strong_buy = st.slider(
+            "Strong Buy (≥)",
+            min_value=50,
+            max_value=100,
+            value=st.session_state.threshold_strong_buy,
+            key="threshold_strong_buy_slider",
+            help="Minimum score for Strong Buy rating",
+        )
+        st.session_state.threshold_strong_buy = threshold_strong_buy
+        st.markdown(f"**Strong Buy:** ≥ {threshold_strong_buy}%")
+
+    with col2:
+        threshold_buy = st.slider(
+            "Buy (≥)",
+            min_value=30,
+            max_value=threshold_strong_buy - 1,
+            value=min(st.session_state.threshold_buy, threshold_strong_buy - 1),
+            key="threshold_buy_slider",
+            help="Minimum score for Buy rating",
+        )
+        st.session_state.threshold_buy = threshold_buy
+        st.markdown(f"**Buy:** {threshold_buy}% - {threshold_strong_buy - 1}%")
+
+    with col3:
+        threshold_hold = st.slider(
+            "Hold (≥)",
+            min_value=10,
+            max_value=threshold_buy - 1,
+            value=min(st.session_state.threshold_hold, threshold_buy - 1),
+            key="threshold_hold_slider",
+            help="Minimum score for Hold rating",
+        )
+        st.session_state.threshold_hold = threshold_hold
+        st.markdown(f"**Hold:** {threshold_hold}% - {threshold_buy - 1}%")
+        st.markdown(f"**Sell:** < {threshold_hold}%")
+
+    st.markdown("---")
+
+    # Apply Settings Button
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        if st.button("✅ Apply Settings", type="primary", use_container_width=True):
+            apply_settings_from_session()
+            st.session_state.settings_applied = True
+            # Clear cached data so new settings take effect
+            get_top_picks.clear()
+            analyze_symbol.clear()
+            st.success("Settings applied! New analyses will use these settings.")
+
+    # Show current active settings
+    with st.expander("📋 Current Active Settings"):
+        st.json({
+            "analyst": {
+                "min_analysts": config.analyst_min_count,
+                "max_analysts": config.analyst_max_count,
+            },
+            "weights": {
+                "analyst": f"{config.analyst_weight:.1%}",
+                "betting": f"{config.betting_weight:.1%}",
+                "news": f"{config.news_weight:.1%}",
+                "options": f"{config.get('weights', 'options', default=0.15):.1%}",
+            },
+            "thresholds": {
+                "strong_buy": f"{config.get('recommendation', 'strong_buy_threshold', default=0.8):.0%}",
+                "buy": f"{config.get('recommendation', 'buy_threshold', default=0.6):.0%}",
+                "hold": f"{config.get('recommendation', 'hold_threshold', default=0.4):.0%}",
+            },
+        })
+
+    st.markdown("---")
+
+    # Data Sources Info
+    st.subheader("📡 Data Sources")
     st.markdown(
         """
         | Source | Description |
