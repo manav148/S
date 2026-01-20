@@ -210,16 +210,22 @@ class Recommendation:
 
     @property
     def current_price(self) -> float | None:
-        """Get current price from analyst data."""
-        if self.analyst_data:
+        """Get current price from analyst data, with Finviz fallback."""
+        if self.analyst_data and self.analyst_data.current_price:
             return self.analyst_data.current_price
+        # Fallback to Finviz price if analyst data unavailable
+        if self.finviz_data and self.finviz_data.price:
+            return self.finviz_data.price
         return None
 
     @property
     def target_price(self) -> float | None:
-        """Get average analyst target price."""
-        if self.analyst_data:
+        """Get average analyst target price, with Finviz fallback."""
+        if self.analyst_data and self.analyst_data.average_target_price:
             return self.analyst_data.average_target_price
+        # Fallback to Finviz target if analyst data unavailable
+        if self.finviz_data and self.finviz_data.target_price:
+            return self.finviz_data.target_price
         return None
 
     @property
