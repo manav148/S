@@ -2,6 +2,9 @@
 
 import asyncio
 import logging
+import random
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,8 +17,46 @@ from ..config import config
 
 logger = logging.getLogger(__name__)
 
-# Thread pool for running synchronous finviz calls
-_executor = ThreadPoolExecutor(max_workers=5)
+# Thread pool for running synchronous finviz calls (reduced to avoid rate limits)
+_executor = ThreadPoolExecutor(max_workers=1)  # Single worker to serialize requests
+
+# Rate limiting: thread-safe tracking of last request time
+_last_request_time = 0.0
+_request_lock = threading.Lock()  # Thread lock for synchronous code
+_MIN_REQUEST_INTERVAL = 2.0  # Minimum seconds between requests (increased for safety)
+_MAX_RETRIES = 3  # Maximum retries for rate-limited requests
+_BACKOFF_BASE = 3.0  # Base backoff time in seconds
+
+
+def _rate_limited_request(func, *args, **kwargs):
+    """Execute a function with rate limiting and retry logic for 429 errors."""
+    global _last_request_time
+
+    for attempt in range(_MAX_RETRIES):
+        # Apply rate limiting with lock
+        with _request_lock:
+            elapsed = time.time() - _last_request_time
+            if elapsed < _MIN_REQUEST_INTERVAL:
+                sleep_time = _MIN_REQUEST_INTERVAL - elapsed + random.uniform(0.1, 0.5)
+                time.sleep(sleep_time)
+            _last_request_time = time.time()
+
+        try:
+            result = func(*args, **kwargs)
+            return result
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "too many requests" in error_str:
+                # Exponential backoff for rate limits
+                backoff_time = _BACKOFF_BASE * (2 ** attempt) + random.uniform(0.5, 2.0)
+                logger.warning(f"Rate limited (attempt {attempt + 1}/{_MAX_RETRIES}), waiting {backoff_time:.1f}s...")
+                time.sleep(backoff_time)
+                continue
+            else:
+                raise
+
+    # All retries exhausted
+    raise Exception(f"Max retries ({_MAX_RETRIES}) exceeded due to rate limiting")
 
 # Lazy import finviz to handle if not installed
 _finviz = None
@@ -373,14 +414,15 @@ class FinvizFetcher:
         return data
 
     def _fetch_finviz_data(self, symbol: str) -> FinvizData | None:
-        """Fetch all Finviz data synchronously (runs in executor)."""
+        """Fetch all Finviz data synchronously (runs in executor) with rate limiting."""
         finviz = _get_finviz()
         if not finviz:
             return None
 
         try:
-            # Get stock overview (90+ data points)
-            stock = finviz.get_stock(symbol)
+            # Get stock overview (90+ data points) - rate limited
+            logger.debug(f"Fetching Finviz stock data for {symbol}...")
+            stock = _rate_limited_request(finviz.get_stock, symbol)
 
             # Parse the data
             data = FinvizData(
@@ -418,25 +460,36 @@ class FinvizFetcher:
                 pfcf=self._parse_float(stock.get("P/FCF")),
             )
 
-            # Fetch insider trading
+            # Fetch insider trading - rate limited
             try:
-                insiders = finviz.get_insider(symbol)
+                logger.debug(f"Fetching Finviz insider data for {symbol}...")
+                insiders = _rate_limited_request(finviz.get_insider, symbol)
                 data.insider_activity = self._parse_insider_data(insiders)
             except Exception as e:
-                logger.debug(f"Could not get insider data for {symbol}: {e}")
+                error_str = str(e).lower()
+                if "429" not in error_str and "too many requests" not in error_str:
+                    logger.debug(f"Could not get insider data for {symbol}: {e}")
                 data.insider_activity = InsiderActivity()
 
-            # Fetch news
+            # Fetch news - rate limited
             try:
-                news = finviz.get_news(symbol)
+                logger.debug(f"Fetching Finviz news for {symbol}...")
+                news = _rate_limited_request(finviz.get_news, symbol)
                 data.news = self._parse_news(news)
             except Exception as e:
-                logger.debug(f"Could not get news for {symbol}: {e}")
+                error_str = str(e).lower()
+                if "429" not in error_str and "too many requests" not in error_str:
+                    logger.debug(f"Could not get news for {symbol}: {e}")
 
+            logger.debug(f"Successfully fetched Finviz data for {symbol}")
             return data
 
         except Exception as e:
-            logger.error(f"Error fetching Finviz data for {symbol}: {e}")
+            error_str = str(e).lower()
+            if "429" in error_str or "too many requests" in error_str or "max retries" in error_str:
+                logger.warning(f"Finviz rate limited for {symbol}, skipping")
+            else:
+                logger.error(f"Error fetching Finviz data for {symbol}: {e}")
             return None
 
     def _parse_float(self, value: Any) -> float | None:
@@ -531,7 +584,7 @@ class FinvizFetcher:
         return articles
 
     async def get_multiple_stocks(self, symbols: list[str]) -> dict[str, FinvizData | None]:
-        """Fetch Finviz data for multiple stocks.
+        """Fetch Finviz data for multiple stocks sequentially with rate limiting.
 
         Args:
             symbols: List of stock ticker symbols
@@ -539,13 +592,16 @@ class FinvizFetcher:
         Returns:
             Dict mapping symbol to FinvizData
         """
-        tasks = [self.get_stock_data(s) for s in symbols]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        return {
-            symbol: result if isinstance(result, FinvizData) else None
-            for symbol, result in zip(symbols, results)
-        }
+        # Process sequentially to respect rate limits - Finviz is very sensitive
+        results = {}
+        for symbol in symbols:
+            try:
+                data = await self.get_stock_data(symbol)
+                results[symbol] = data
+            except Exception as e:
+                logger.debug(f"Failed to fetch Finviz data for {symbol}: {e}")
+                results[symbol] = None
+        return results
 
     async def close(self) -> None:
         """Close any resources (placeholder for consistency)."""
